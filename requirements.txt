@@ -1,0 +1,14 @@
+# Telegram runtime
+aiogram>=3.4,<4.0
+
+# NLP and vector search. The code has standard-library fallbacks, but these
+# packages enable the advanced coursework path with ChromaDB and RuBERT.
+chromadb>=0.5
+transformers>=4.40
+torch>=2.2
+scikit-learn>=1.4
+numpy>=1.26
+
+# Speech stack. ffmpeg must also be installed as a system package.
+soundfile>=0.12
+gigaam @ git+https://github.com/salute-developers/GigaAM.git

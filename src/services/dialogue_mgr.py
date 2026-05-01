@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-
-from aiogram.fsm.context import FSMContext
+from typing import TYPE_CHECKING, Any
 
 from src.bot.states import DialogueStates
 from src.nlp.classifier import IntentClassifier, IntentResult, SentimentClassifier
@@ -14,6 +15,9 @@ from src.services.ad_campaign import AdCampaignManager
 from src.speech import SpeechProcessor
 from src.utils.audio_conv import convert_ogg_to_wav
 from src.utils.text_cleaner import normalize_user_text
+
+if TYPE_CHECKING:
+    from aiogram.fsm.context import FSMContext
 
 
 @dataclass(slots=True)
@@ -78,6 +82,10 @@ class DialogueManager:
         state_data = await state.get_data()
         message_count = int(state_data.get("message_count", 0)) + 1
         current_state = await state.get_state()
+        if current_state is None:
+            await state.set_state(DialogueStates.normal_chat)
+            current_state = DialogueStates.normal_chat.state
+
         ctx = DialogueContext(
             chat_id=chat_id,
             user_id=user_id,
@@ -86,7 +94,17 @@ class DialogueManager:
         )
 
         intent = await self.intent_classifier.predict(normalized_text)
-        _sentiment = await self.sentiment_classifier.predict(normalized_text)
+        sentiment = await self.sentiment_classifier.predict(normalized_text)
+
+        if current_state in {DialogueStates.ad_offering.state, DialogueStates.ad_follow_up.state}:
+            reply_text = await self.ad_campaign_manager.handle_ad_reply(normalized_text, intent)
+            if intent.label == "decline":
+                await state.set_state(DialogueStates.normal_chat)
+                await state.update_data(message_count=message_count, ad_declined=True)
+            else:
+                await state.set_state(DialogueStates.ad_follow_up)
+                await state.update_data(message_count=message_count, ad_declined=False)
+            return BotResponse(text=self._apply_sentiment(reply_text, sentiment.label, sentiment.confidence))
 
         should_trigger_ad = await self.ad_campaign_manager.should_trigger_ad(
             intent=intent,
@@ -94,28 +112,22 @@ class DialogueManager:
             message_count=ctx.message_count,
             ad_message_threshold=self.ad_message_threshold,
         )
-        if should_trigger_ad and current_state != DialogueStates.ad_offering.state:
+        if should_trigger_ad and (not state_data.get("ad_declined") or self._is_explicit_ad_request(intent, normalized_text)):
             await state.set_state(DialogueStates.ad_offering)
             ad_text, ad_images = await self.ad_campaign_manager.render_ad_offer()
-            await state.update_data(message_count=message_count)
+            await state.update_data(message_count=message_count, ad_declined=False)
             return BotResponse(text=ad_text, image_paths=ad_images)
-
-        if current_state == DialogueStates.ad_offering.state:
-            reply_text = await self.ad_campaign_manager.handle_ad_reply(normalized_text, intent)
-            await state.update_data(message_count=message_count)
-            return BotResponse(text=reply_text)
 
         direct_response = await self._get_predefined_intent_response(intent)
         if direct_response is not None:
             await state.update_data(message_count=message_count)
-            return BotResponse(text=direct_response)
+            return BotResponse(text=self._apply_sentiment(direct_response, sentiment.label, sentiment.confidence))
 
         retrieval_result = await self._resolve_via_retrieval(normalized_text)
         await state.update_data(message_count=message_count)
 
-        # TODO: emit structured log record with route, intent, confidence, and latency.
         _latency_ms = int((time.perf_counter() - started_at) * 1000)
-        return BotResponse(text=retrieval_result)
+        return BotResponse(text=self._apply_sentiment(retrieval_result, sentiment.label, sentiment.confidence))
 
     async def process_voice_message(
         self,
@@ -125,18 +137,29 @@ class DialogueManager:
         voice_file_id: str,
         state: FSMContext,
         temp_audio_dir: str,
+        bot: Any | None = None,
+        source_ogg_path: str | None = None,
     ) -> BotResponse:
-        """Voice pipeline placeholder: download -> convert -> ASR -> text route -> TTS."""
+        """Voice pipeline: download -> convert -> ASR -> text route -> TTS."""
         temp_dir = Path(temp_audio_dir)
         temp_dir.mkdir(parents=True, exist_ok=True)
 
-        ogg_path = temp_dir / f"{chat_id}_{user_id}_{voice_file_id}.ogg"
-        wav_path = temp_dir / f"{chat_id}_{user_id}_{voice_file_id}.wav"
-        out_voice_path = temp_dir / f"{chat_id}_{user_id}_{voice_file_id}_response.ogg"
+        safe_id = hashlib.sha1(voice_file_id.encode("utf-8")).hexdigest()[:16]
+        ogg_path = temp_dir / f"{chat_id}_{user_id}_{safe_id}.ogg"
+        wav_path = temp_dir / f"{chat_id}_{user_id}_{safe_id}.wav"
+        out_voice_path = temp_dir / f"{chat_id}_{user_id}_{safe_id}_response.ogg"
 
         try:
-            # TODO: download Telegram voice by file_id using Bot API.
-            # TODO: persist incoming audio to ogg_path.
+            if source_ogg_path:
+                source = Path(source_ogg_path)
+                if source.resolve() != ogg_path.resolve():
+                    shutil.copyfile(source, ogg_path)
+            elif bot is not None:
+                telegram_file = await bot.get_file(voice_file_id)
+                await bot.download_file(telegram_file.file_path, destination=ogg_path)
+            else:
+                raise FileNotFoundError("voice source is not available")
+
             convert_ogg_to_wav(str(ogg_path), str(wav_path))
             transcribed = await self.speech_processor.transcribe_audio(str(wav_path))
             text_response = await self.process_text_message(
@@ -146,7 +169,6 @@ class DialogueManager:
                 state=state,
             )
 
-            # TODO: define policy for when voice response should be skipped (e.g., long replies).
             synthesized_path = await self.speech_processor.synthesize_audio(
                 text=text_response.text,
                 output_path=str(out_voice_path),
@@ -155,26 +177,34 @@ class DialogueManager:
             text_response.voice_path = synthesized_path
             return text_response
         except (FileNotFoundError, OSError, RuntimeError, ValueError):
-            # TODO: map concrete pipeline failures to user-facing fallback messages.
             return BotResponse(text="Не удалось обработать голосовое сообщение. Попробуйте еще раз.")
         finally:
-            # TODO: cleanup policy for temp audio files and TTL-based retention.
-            pass
+            for path in (ogg_path, wav_path):
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     async def _get_predefined_intent_response(self, intent: IntentResult) -> str | None:
-        # TODO: move mappings to config/localized resources.
-        mapping = {
-            "greeting": "Здравствуйте! Чем могу помочь по мебели?",
-            "farewell": "Спасибо за обращение. Если захотите подобрать мебель, я рядом.",
-            "thanks": "Всегда пожалуйста!",
-        }
-        if intent.confidence < 0.7:
+        if intent.confidence < 0.5:
             return None
-        return mapping.get(intent.label)
+        return self.intent_classifier.get_random_response(intent.label)
 
     async def _resolve_via_retrieval(self, normalized_text: str) -> str:
+        await self.vector_db.ensure_ready(self.embedding_engine)
         embedding = await self.embedding_engine.encode(normalized_text)
         result: RetrievalResult = await self.vector_db.search_answer(embedding=embedding, top_k=1)
         if result.distance > self.retrieval_distance_threshold:
             return "Я не совсем понял запрос. Могу помочь подобрать диван, стол или шкаф."
         return result.answer_text
+
+    def _is_explicit_ad_request(self, intent: IntentResult, normalized_text: str) -> bool:
+        explicit_intents = {"buy_furniture", "ask_catalog", "product_sofa", "product_table", "product_wardrobe"}
+        if intent.label in explicit_intents and intent.confidence >= 0.35:
+            return True
+        return any(marker in normalized_text for marker in ("мебель", "диван", "стол", "шкаф", "каталог", "купить"))
+
+    def _apply_sentiment(self, text: str, sentiment_label: str, confidence: float) -> str:
+        if sentiment_label == "negative" and confidence >= 0.65:
+            return f"Понимаю, это может раздражать. {text}"
+        return text

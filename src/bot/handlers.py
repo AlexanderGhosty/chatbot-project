@@ -7,7 +7,7 @@ from pathlib import Path
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import FSInputFile, Message
 
 from src.bot.states import DialogueStates
 from src.services.dialogue_mgr import BotResponse, DialogueManager
@@ -44,13 +44,14 @@ def bind_handlers(deps: HandlerDeps) -> Router:
         if not message.voice:
             return
 
-        # TODO: add chat action indicators (typing/recording voice) for better UX.
+        await message.bot.send_chat_action(chat_id=message.chat.id, action="record_voice")
         response = await deps.dialogue_manager.process_voice_message(
             chat_id=message.chat.id,
             user_id=message.from_user.id if message.from_user else 0,
             voice_file_id=message.voice.file_id,
             state=state,
             temp_audio_dir=deps.temp_audio_dir,
+            bot=message.bot,
         )
         await _send_response(message=message, response=response)
 
@@ -59,6 +60,7 @@ def bind_handlers(deps: HandlerDeps) -> Router:
         if not message.text:
             return
 
+        await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
         response = await deps.dialogue_manager.process_text_message(
             chat_id=message.chat.id,
             user_id=message.from_user.id if message.from_user else 0,
@@ -78,12 +80,15 @@ def bind_handlers(deps: HandlerDeps) -> Router:
 async def _send_response(message: Message, response: BotResponse) -> None:
     """Deliver assembled response payload to Telegram."""
     if response.image_paths:
-        # TODO: send media group / product cards as needed by ad scenario.
         await message.answer(response.text)
+        for image_path in response.image_paths:
+            path = Path(image_path)
+            if path.exists():
+                await message.answer_photo(photo=FSInputFile(path))
         return
 
     if response.send_voice and response.voice_path:
-        await message.answer_voice(voice=Path(response.voice_path))
+        await message.answer_voice(voice=FSInputFile(response.voice_path))
         return
 
     await message.answer(response.text)

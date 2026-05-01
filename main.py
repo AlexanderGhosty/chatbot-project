@@ -27,18 +27,23 @@ class ServiceContainer:
     speech_processor: SpeechProcessor
     ad_campaign_manager: AdCampaignManager
     dialogue_manager: DialogueManager
+    temp_audio_dir: str
 
 
 def build_services(config: AppConfig) -> ServiceContainer:
     """Build service layer objects and wire dependencies."""
     # TODO: replace placeholder constructors with real model/db initializers.
-    intent_classifier = IntentClassifier(model_name=config.intent_model_name)
+    intent_classifier = IntentClassifier(model_name=config.intent_model_name, intents_path=config.intents_path)
     sentiment_classifier = SentimentClassifier(model_name=config.sentiment_model_name)
     embedding_engine = EmbeddingEngine(model_name=config.embedding_model_name)
-    vector_db = VectorDatabase(db_path=config.chroma_path, collection_name=config.chroma_collection)
+    vector_db = VectorDatabase(
+        db_path=config.chroma_path,
+        collection_name=config.chroma_collection,
+        dialogues_path=config.dialogues_path,
+    )
     speech_processor = SpeechProcessor(
         asr=ASRProcessor(model_name=config.asr_model_name),
-        tts=TTSProcessor(model_name=config.tts_model_name),
+        tts=TTSProcessor(model_name=config.tts_model_name, speaker=config.tts_speaker),
     )
     ad_campaign_manager = AdCampaignManager.default()
     dialogue_manager = DialogueManager(
@@ -59,6 +64,7 @@ def build_services(config: AppConfig) -> ServiceContainer:
         speech_processor=speech_processor,
         ad_campaign_manager=ad_campaign_manager,
         dialogue_manager=dialogue_manager,
+        temp_audio_dir=config.temp_audio_dir,
     )
 
 
