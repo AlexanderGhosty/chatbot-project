@@ -1,0 +1,50 @@
+x-app-env: &app-env
+  PYTHONUNBUFFERED: "1"
+  TOKENIZERS_PARALLELISM: "false"
+  HF_HOME: /cache/huggingface
+  TRANSFORMERS_CACHE: /cache/huggingface
+  TORCH_HOME: /cache/torch
+  XDG_CACHE_HOME: /cache/xdg
+
+x-app-volumes: &app-volumes
+  - ./data:/app/data
+  - ./media:/app/media
+  - hf-cache:/cache/huggingface
+  - torch-cache:/cache/torch
+  - xdg-cache:/cache/xdg
+
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: furniture-chatbot:latest
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      <<: *app-env
+    volumes: *app-volumes
+    command: ["python", "main.py"]
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  indexer:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: furniture-chatbot:latest
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      <<: *app-env
+    volumes: *app-volumes
+    command: ["python", "scripts/build_vector_db.py"]
+    restart: "no"
+
+volumes:
+  hf-cache:
+  torch-cache:
+  xdg-cache:

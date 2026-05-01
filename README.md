@@ -35,3 +35,16 @@ python scripts/build_vector_db.py
 
 Если установлен `chromadb`, будет использована persistent collection. Если нет,
 создается локальный fallback-индекс в `data/chromadb`.
+
+## Docker Compose
+
+Контейнерный запуск использует host-сеть, persistent volumes для кэшей моделей
+и embedded ChromaDB в `data/chromadb`:
+
+```bash
+cp .env.example .env
+# заполните TELEGRAM_BOT_TOKEN в .env
+docker compose build
+docker compose --profile tools run --rm indexer
+docker compose up bot
+```

@@ -20,6 +20,8 @@ class TTSProcessor:
         self._load_error: Exception | None = None
 
     async def synthesize_audio(self, text: str, output_path: str) -> str:
+        if self._is_local_tone():
+            return self._synthesize_sync(text, output_path)
         if importlib.util.find_spec("torch") is not None:
             return await asyncio.to_thread(self._synthesize_sync, text, output_path)
         return self._synthesize_sync(text, output_path)
@@ -29,6 +31,10 @@ class TTSProcessor:
         target.parent.mkdir(parents=True, exist_ok=True)
 
         wav_path = target.with_suffix(".wav") if target.suffix.lower() != ".wav" else target
+        if self._is_local_tone():
+            self._write_fallback_tone(wav_path, duration_seconds=max(1.0, min(5.0, len(text) / 35.0)))
+            return self._convert_if_needed(wav_path, target)
+
         if self._synthesize_with_silero(text, wav_path):
             return self._convert_if_needed(wav_path, target)
         if self._synthesize_with_espeak(text, wav_path):
@@ -36,6 +42,9 @@ class TTSProcessor:
 
         self._write_fallback_tone(wav_path, duration_seconds=max(1.0, min(5.0, len(text) / 35.0)))
         return self._convert_if_needed(wav_path, target)
+
+    def _is_local_tone(self) -> bool:
+        return self.model_name in {"local-tone", "fallback-tone"}
 
     def _ensure_silero_loaded(self) -> bool:
         if self._model is not None and self._torch is not None:

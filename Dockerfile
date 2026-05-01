@@ -6,7 +6,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg git \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        ffmpeg \
+        git \
+        libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

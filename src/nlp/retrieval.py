@@ -34,16 +34,19 @@ class VectorDatabase:
         db_path: str,
         collection_name: str,
         dialogues_path: str = "data/raw/dialogues.txt",
+        use_chroma: bool = True,
     ) -> None:
         self.db_path = db_path
         self.collection_name = collection_name
         self.dialogues_path = Path(dialogues_path)
+        self.use_chroma = use_chroma
         self._client = None
         self._collection = None
         self._records: list[_DialogueRecord] = []
         self._ready = False
         self._lock = asyncio.Lock()
-        self._init_chroma()
+        if self.use_chroma:
+            self._init_chroma()
 
     async def ensure_ready(self, embedding_engine: "EmbeddingEngine") -> None:
         if self._ready:

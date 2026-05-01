@@ -92,6 +92,19 @@ class AdCampaignManager:
         image_paths = [product.image_path for product in self.products if product.image_path]
         return "\n".join(lines), image_paths
 
+    async def render_product_details(self, sku: str) -> tuple[str, str | None]:
+        product = self.get_product(sku)
+        if product is None:
+            return "Не нашел такой товар в каталоге. Могу показать диван Loft, стол Nordic или шкаф Urban.", None
+        return (
+            f"{product.title}: {product.description}\n"
+            "Могу подсказать размеры, стиль, сценарий использования или подготовить заказ.",
+            product.image_path,
+        )
+
+    def get_product(self, sku: str) -> AdProduct | None:
+        return next((product for product in self.products if product.sku == sku), None)
+
     async def handle_ad_reply(self, normalized_text: str, intent: IntentResult) -> str:
         text = normalize_for_matching(normalized_text)
         if intent.label == "decline" or any(marker in text for marker in ("не надо", "нет", "потом", "не интересно")):

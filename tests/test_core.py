@@ -55,6 +55,7 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
                 db_path=tmp_dir,
                 collection_name="test_dialogues",
                 dialogues_path="data/raw/dialogues.txt",
+                use_chroma=False,
             )
             await db.ensure_ready(engine)
             query = await engine.encode("как выбрать шкаф")
@@ -68,8 +69,8 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
                 intent_classifier=IntentClassifier("local-intents", intents_path="data/raw/intents.json"),
                 sentiment_classifier=SentimentClassifier("local-lexicon"),
                 embedding_engine=EmbeddingEngine("local-hash"),
-                vector_db=VectorDatabase(tmp_dir, "dialogues", "data/raw/dialogues.txt"),
-                speech_processor=SpeechProcessor(ASRProcessor("ctc"), TTSProcessor("v4_ru")),
+                vector_db=VectorDatabase(tmp_dir, "dialogues", "data/raw/dialogues.txt", use_chroma=False),
+                speech_processor=SpeechProcessor(ASRProcessor("ctc"), TTSProcessor("local-tone")),
                 ad_campaign_manager=AdCampaignManager.default(),
                 retrieval_distance_threshold=0.7,
                 ad_message_threshold=99,
@@ -101,7 +102,7 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
             asr = ASRProcessor("ctc")
             self.assertEqual(await asr.transcribe_audio(str(wav_path)), "привет")
 
-            tts = TTSProcessor("v4_ru")
+            tts = TTSProcessor("local-tone")
             out_path = await tts.synthesize_audio("тестовый ответ", str(Path(tmp_dir) / "answer.wav"))
             self.assertTrue(Path(out_path).exists())
 

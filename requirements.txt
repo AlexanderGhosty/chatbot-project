@@ -3,9 +3,11 @@ aiogram>=3.4,<4.0
 
 # NLP and vector search. The code has standard-library fallbacks, but these
 # packages enable the advanced coursework path with ChromaDB and RuBERT.
+--extra-index-url https://download.pytorch.org/whl/cpu
 chromadb>=0.5
-transformers>=4.40
-torch>=2.2
+transformers>=4.40,<5.0
+torch==2.5.1+cpu
+torchaudio==2.5.1+cpu
 scikit-learn>=1.4
 numpy>=1.26
 

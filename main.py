@@ -32,7 +32,6 @@ class ServiceContainer:
 
 def build_services(config: AppConfig) -> ServiceContainer:
     """Build service layer objects and wire dependencies."""
-    # TODO: replace placeholder constructors with real model/db initializers.
     intent_classifier = IntentClassifier(model_name=config.intent_model_name, intents_path=config.intents_path)
     sentiment_classifier = SentimentClassifier(model_name=config.sentiment_model_name)
     embedding_engine = EmbeddingEngine(model_name=config.embedding_model_name)
@@ -89,7 +88,6 @@ async def create_app() -> tuple[Bot, Dispatcher, ServiceContainer]:
 
 async def run() -> None:
     bot, dispatcher, _ = await create_app()
-    # TODO: add startup hooks (warmup embeddings/model caches, health checks).
     await dispatcher.start_polling(bot)
 
 
