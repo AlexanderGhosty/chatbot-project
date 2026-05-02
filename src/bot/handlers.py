@@ -126,6 +126,8 @@ async def _send_response(message: Message, response: BotResponse, deps: HandlerD
             await message.answer_voice(voice=FSInputFile(voice_path))
         finally:
             voice_path.unlink(missing_ok=True)
+            if voice_path.suffix.lower() != ".wav":
+                voice_path.with_suffix(".wav").unlink(missing_ok=True)
         return
 
     await message.answer(response.text)

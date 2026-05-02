@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -18,6 +19,8 @@ from src.utils.text_cleaner import normalize_user_text
 
 if TYPE_CHECKING:
     from aiogram.fsm.context import FSMContext
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -169,10 +172,17 @@ class DialogueManager:
                 state=state,
             )
 
-            synthesized_path = await self.speech_processor.synthesize_audio(
-                text=text_response.text,
-                output_path=str(out_voice_path),
-            )
+            try:
+                synthesized_path = await self.speech_processor.synthesize_audio(
+                    text=text_response.text,
+                    output_path=str(out_voice_path),
+                )
+            except RuntimeError:
+                logger.exception("TTS failed, sending text response instead")
+                out_voice_path.unlink(missing_ok=True)
+                out_voice_path.with_suffix(".wav").unlink(missing_ok=True)
+                return text_response
+
             text_response.send_voice = True
             text_response.voice_path = synthesized_path
             return text_response

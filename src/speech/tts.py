@@ -2,28 +2,52 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import logging
 import math
+import os
 import shutil
 import struct
 import subprocess
+import sys
+import threading
+import time
 import wave
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+_SILERO_IMPORT_LOCK = threading.RLock()
+
 
 class TTSProcessor:
-    def __init__(self, model_name: str, speaker: str = "xenia", sample_rate: int = 48000) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        speaker: str = "xenia",
+        sample_rate: int = 48000,
+        timeout_seconds: float = 180.0,
+    ) -> None:
         self.model_name = model_name
         self.speaker = speaker
         self.sample_rate = sample_rate
+        self.timeout_seconds = timeout_seconds
         self._model = None
         self._torch = None
         self._load_error: Exception | None = None
+        self._last_load_attempt_at = 0.0
+        self._load_retry_after_seconds = 60.0
+        self._last_error: str | None = None
 
     async def synthesize_audio(self, text: str, output_path: str) -> str:
         if self._is_local_tone():
             return self._synthesize_sync(text, output_path)
         if importlib.util.find_spec("torch") is not None:
-            return await asyncio.to_thread(self._synthesize_sync, text, output_path)
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(self._synthesize_sync, text, output_path),
+                    timeout=self.timeout_seconds,
+                )
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError("TTS synthesis timed out") from exc
         return self._synthesize_sync(text, output_path)
 
     def _synthesize_sync(self, text: str, output_path: str) -> str:
@@ -40,8 +64,8 @@ class TTSProcessor:
         if self._synthesize_with_espeak(text, wav_path):
             return self._convert_if_needed(wav_path, target)
 
-        self._write_fallback_tone(wav_path, duration_seconds=max(1.0, min(5.0, len(text) / 35.0)))
-        return self._convert_if_needed(wav_path, target)
+        detail = f": {self._last_error}" if self._last_error else ""
+        raise RuntimeError(f"TTS synthesis failed{detail}")
 
     def _is_local_tone(self) -> bool:
         return self.model_name in {"local-tone", "fallback-tone"}
@@ -49,25 +73,60 @@ class TTSProcessor:
     def _ensure_silero_loaded(self) -> bool:
         if self._model is not None and self._torch is not None:
             return True
-        if self._load_error is not None:
+
+        now = time.monotonic()
+        if self._load_error is not None and now - self._last_load_attempt_at < self._load_retry_after_seconds:
             return False
+
+        self._last_load_attempt_at = now
         try:
             import torch
 
-            model, _example_text = torch.hub.load(
-                repo_or_dir="snakers4/silero-models",
-                model="silero_tts",
-                language="ru",
-                speaker=self.model_name,
-                trust_repo=True,
-            )
+            os.environ.setdefault("TORCH_HOME", str(Path("data/model_cache/torch").resolve()))
+            model, _example_text = self._load_silero_from_torch_hub(torch)
             model.to(torch.device("cpu"))
             self._model = model
             self._torch = torch
+            self._load_error = None
+            logger.info("Silero TTS model loaded: model=%s speaker=%s", self.model_name, self.speaker)
             return True
         except Exception as exc:  # pragma: no cover - optional dependency/model cache/network.
             self._load_error = exc
+            self._last_error = f"Silero load error: {exc}"
+            logger.exception("Failed to load Silero TTS model")
             return False
+
+    def _load_silero_from_torch_hub(self, torch):
+        """
+        Load Silero despite this project also being named `src`.
+
+        Silero's hubconf imports `src.silero`. Because the bot package is also
+        `src`, Python may resolve that import to `/app/src` and fail with
+        `ModuleNotFoundError: No module named 'src.silero'`. Temporarily hiding
+        project `src*` modules lets torch.hub resolve Silero's own package.
+        """
+        with _SILERO_IMPORT_LOCK:
+            src_modules = {
+                name: module
+                for name, module in sys.modules.items()
+                if name == "src" or name.startswith("src.")
+            }
+            for name in src_modules:
+                sys.modules.pop(name, None)
+
+            try:
+                return torch.hub.load(
+                    repo_or_dir="snakers4/silero-models",
+                    model="silero_tts",
+                    language="ru",
+                    speaker=self.model_name,
+                    trust_repo=True,
+                )
+            finally:
+                for name in list(sys.modules):
+                    if (name == "src" or name.startswith("src.")) and name not in src_modules:
+                        sys.modules.pop(name, None)
+                sys.modules.update(src_modules)
 
     def _synthesize_with_silero(self, text: str, wav_path: Path) -> bool:
         if not self._ensure_silero_loaded():
@@ -85,12 +144,15 @@ class TTSProcessor:
                 values = list(audio)
             self._write_wav(wav_path, values, self.sample_rate)
             return True
-        except Exception:
+        except Exception as exc:
+            self._last_error = f"Silero synthesis error: {exc}"
+            logger.exception("Failed to synthesize speech with Silero")
             return False
 
     def _synthesize_with_espeak(self, text: str, wav_path: Path) -> bool:
         espeak = shutil.which("espeak") or shutil.which("espeak-ng")
         if espeak is None:
+            self._last_error = "espeak/espeak-ng binary is not installed"
             return False
         completed = subprocess.run(
             [espeak, "-v", "ru", "-w", str(wav_path), text[:900]],
@@ -98,7 +160,12 @@ class TTSProcessor:
             text=True,
             check=False,
         )
-        return completed.returncode == 0 and wav_path.exists()
+        if completed.returncode == 0 and wav_path.exists():
+            return True
+
+        self._last_error = completed.stderr.strip() or "espeak exited without output"
+        logger.warning("Failed to synthesize speech with espeak: %s", self._last_error)
+        return False
 
     def _convert_if_needed(self, wav_path: Path, target: Path) -> str:
         if target.suffix.lower() == ".wav":
@@ -118,6 +185,12 @@ class TTSProcessor:
                 "libopus",
                 "-b:a",
                 "32k",
+                "-application",
+                "voip",
+                "-ar",
+                "48000",
+                "-ac",
+                "1",
                 str(target),
             ],
             capture_output=True,

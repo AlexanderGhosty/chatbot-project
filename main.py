@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 
 from aiogram import Bot, Dispatcher
@@ -87,6 +88,7 @@ async def create_app() -> tuple[Bot, Dispatcher, ServiceContainer]:
 
 
 async def run() -> None:
+    logging.basicConfig(level=logging.INFO)
     bot, dispatcher, _ = await create_app()
     await dispatcher.start_polling(bot)
 

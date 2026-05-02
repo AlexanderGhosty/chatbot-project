@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from src.bot.states import DialogueStates
 from src.nlp.classifier import IntentClassifier, SentimentClassifier
@@ -105,6 +106,45 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
             tts = TTSProcessor("local-tone")
             out_path = await tts.synthesize_audio("тестовый ответ", str(Path(tmp_dir) / "answer.wav"))
             self.assertTrue(Path(out_path).exists())
+
+    async def test_production_tts_does_not_generate_tone_on_backend_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_path = Path(tmp_dir) / "answer.wav"
+            tts = TTSProcessor("v4_ru")
+            with (
+                patch("src.speech.tts.importlib.util.find_spec", return_value=None),
+                patch.object(TTSProcessor, "_synthesize_with_silero", return_value=False),
+                patch.object(TTSProcessor, "_synthesize_with_espeak", return_value=False),
+            ):
+                with self.assertRaises(RuntimeError):
+                    await tts.synthesize_audio("тестовый ответ", str(out_path))
+            self.assertFalse(out_path.exists())
+
+    def test_silero_torch_hub_load_hides_project_src_package(self) -> None:
+        import sys
+
+        project_src = sys.modules["src"]
+
+        class FakeHub:
+            def __init__(self) -> None:
+                self.project_src_was_hidden = False
+
+            def load(self, **_kwargs):
+                self.project_src_was_hidden = sys.modules.get("src") is None
+                sys.modules["src"] = object()
+                sys.modules["src.silero"] = object()
+                return object(), "example"
+
+        class FakeTorch:
+            hub = FakeHub()
+
+        model, example = TTSProcessor("v4_ru")._load_silero_from_torch_hub(FakeTorch)
+
+        self.assertIsNotNone(model)
+        self.assertEqual(example, "example")
+        self.assertTrue(FakeTorch.hub.project_src_was_hidden)
+        self.assertIs(sys.modules["src"], project_src)
+        self.assertNotIn("src.silero", sys.modules)
 
 
 if __name__ == "__main__":
