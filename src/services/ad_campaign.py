@@ -12,6 +12,18 @@ class AdProduct:
     title: str
     description: str
     image_path: str
+    dimensions: str
+    style: str
+    use_case: str
+    price_hint: str
+
+
+@dataclass(slots=True)
+class AdReply:
+    text: str
+    selected_sku: str | None = None
+    handled: bool = True
+    declined: bool = False
 
 
 class AdCampaignManager:
@@ -27,18 +39,30 @@ class AdCampaignManager:
                     "Диван Loft",
                     "Двухместный диван для гостиной, компактный механизм трансформации, износостойкая ткань.",
                     "media/furniture/sofa.jpg",
+                    "190 x 92 x 86 см, спальное место 140 x 190 см.",
+                    "Современный лофт: нейтральная ткань, простая геометрия, металлические акценты.",
+                    "Подойдет для гостиной, студии или комнаты, где диван иногда нужен как спальное место.",
+                    "Средний ценовой сегмент; точная цена зависит от ткани и комплектации.",
                 ),
                 AdProduct(
                     "table-001",
                     "Стол Nordic",
                     "Обеденный стол из массива дерева на 4-6 человек, спокойный скандинавский дизайн.",
                     "media/furniture/table.jpg",
+                    "140 x 80 x 75 см, комфортно для 4 человек, допустимо для 6.",
+                    "Скандинавский стиль: светлое дерево, лаконичные ножки, матовое покрытие.",
+                    "Хорош для кухни-гостиной, семейных ужинов и рабочего места на ноутбуке.",
+                    "Средний ценовой сегмент; дороже компактных ЛДСП-моделей за счет массива.",
                 ),
                 AdProduct(
                     "wardrobe-001",
                     "Шкаф Urban",
                     "Трехстворчатый шкаф с зеркалом, штангой для одежды и глубокими полками.",
                     "media/furniture/wardrobe.jpg",
+                    "180 x 60 x 220 см, три секции, глубина полок 55 см.",
+                    "Городской минимализм: белые фасады, зеркало в центральной створке, спокойная фурнитура.",
+                    "Подойдет для спальни, прихожей или гардеробной зоны в небольшой квартире.",
+                    "Средний ценовой сегмент; цена зависит от фасадов и внутреннего наполнения.",
                 ),
             ]
         )
@@ -96,39 +120,88 @@ class AdCampaignManager:
         product = self.get_product(sku)
         if product is None:
             return "Не нашел такой товар в каталоге. Могу показать диван Loft, стол Nordic или шкаф Urban.", None
-        return (
-            f"{product.title}: {product.description}\n"
-            "Могу подсказать размеры, стиль, сценарий использования или подготовить заказ.",
-            product.image_path,
-        )
+        return self.render_product_summary(product), product.image_path
 
     def get_product(self, sku: str) -> AdProduct | None:
         return next((product for product in self.products if product.sku == sku), None)
 
-    async def handle_ad_reply(self, normalized_text: str, intent: IntentResult) -> str:
+    async def handle_ad_reply(
+        self,
+        normalized_text: str,
+        intent: IntentResult,
+        selected_product_sku: str | None = None,
+    ) -> AdReply:
         text = normalize_for_matching(normalized_text)
-        if intent.label == "decline" or any(marker in text for marker in ("не надо", "нет", "потом", "не интересно")):
-            return "Хорошо, не буду отвлекать рекламой. Если понадобится мебель, просто напишите, что ищете."
-
-        selected = self._find_selected_product(text, intent)
-        if selected is not None:
-            return (
-                f"{selected.title}: {selected.description}\n"
-                "Могу подсказать размеры, стиль, сценарий использования или подготовить заказ."
+        words = set(text.split())
+        if self._is_decline(text, intent):
+            return AdReply(
+                text="Хорошо, не буду отвлекать рекламой. Если понадобится мебель, просто напишите, что ищете.",
+                declined=True,
             )
 
-        if intent.label == "agree" or any(marker in text for marker in ("да", "каталог", "покажи", "интересно")):
+        selected = self.find_selected_product(text, intent)
+        if selected is not None:
+            return AdReply(text=self.render_product_summary(selected), selected_sku=selected.sku)
+
+        current = self.get_product(selected_product_sku) if selected_product_sku else None
+        if current is not None:
+            if self._is_purchase_request(words):
+                return AdReply(text=self.render_purchase_prompt(current), selected_sku=current.sku)
+            if self._is_detail_request(words):
+                return AdReply(text=self.render_product_details_text(current, words), selected_sku=current.sku)
+
+        if self._is_catalog_request(words, intent):
             catalog = "\n".join(
                 f"- {product.title}: {product.description}" for product in self.products
             )
-            return f"Вот краткий каталог:\n{catalog}\n\nЧто смотрим подробнее?"
+            return AdReply(text=f"Вот краткий каталог:\n{catalog}\n\nЧто смотрим подробнее?")
 
-        return (
-            "Могу показать подробнее диван Loft, стол Nordic или шкаф Urban. "
-            "Напишите название товара или задайте вопрос по размерам, доставке и оплате."
+        if not self.is_product_related(text, intent):
+            return AdReply(text="", handled=False)
+
+        return AdReply(
+            text=(
+                "Могу показать подробнее диван Loft, стол Nordic или шкаф Urban. "
+                "Напишите название товара или задайте вопрос по размерам, доставке и оплате."
+            )
         )
 
-    def _find_selected_product(self, text: str, intent: IntentResult) -> AdProduct | None:
+    def render_product_summary(self, product: AdProduct) -> str:
+        return (
+            f"{product.title}: {product.description}\n"
+            f"Размеры: {product.dimensions}\n"
+            f"Стиль: {product.style}\n"
+            f"Сценарий: {product.use_case}\n"
+            "Могу подсказать оплату, доставку или помочь подготовить заказ."
+        )
+
+    def render_product_details_text(self, product: AdProduct, words: set[str]) -> str:
+        lines = [f"{product.title}:"]
+        if words & {"размер", "размеры", "габарит", "габариты", "ширина", "высота", "глубина"}:
+            lines.append(f"Размеры: {product.dimensions}")
+        if words & {"стиль", "стили", "дизайн", "цвет", "интерьер"}:
+            lines.append(f"Стиль: {product.style}")
+        if words & {"сценарий", "сценарии", "использование", "подойдет", "куда", "комната"}:
+            lines.append(f"Сценарий использования: {product.use_case}")
+        if words & {"цена", "стоимость", "сколько", "дорого"}:
+            lines.append(f"Цена: {product.price_hint}")
+        if words & {"доставка", "доставить", "привезете"}:
+            lines.append("Доставка: можно согласовать адрес и удобный интервал.")
+        if words & {"оплата", "оплатить", "карта", "наличные"}:
+            lines.append("Оплата: карта, наличные при получении или безналичный расчет.")
+        if len(lines) == 1:
+            lines.extend([f"Размеры: {product.dimensions}", f"Стиль: {product.style}", f"Сценарий: {product.use_case}"])
+        lines.append("Если подходит, напишите «хочу купить» или уточните доставку.")
+        return "\n".join(lines)
+
+    def render_purchase_prompt(self, product: AdProduct) -> str:
+        return (
+            f"Отлично, зафиксировал интерес к {product.title}. "
+            "Для подготовки заказа нужны город доставки, удобный день и способ оплаты. "
+            f"Кратко по товару: {product.description}"
+        )
+
+    def find_selected_product(self, text: str, intent: IntentResult) -> AdProduct | None:
         label_to_sku = {
             "product_sofa": "sofa-001",
             "product_table": "table-001",
@@ -152,3 +225,54 @@ class AdCampaignManager:
             if keyword in text:
                 return next((product for product in self.products if product.sku == sku), None)
         return None
+
+    def is_product_related(self, text: str, intent: IntentResult) -> bool:
+        words = set(text.split())
+        if self.find_selected_product(text, intent) is not None:
+            return True
+        if (
+            self._is_catalog_request(words, intent)
+            or self._is_detail_request(words)
+            or self._is_purchase_request(words)
+        ):
+            return True
+        return bool(words & {"мебель", "доставка", "оплата", "цена", "стоимость", "интерьер"})
+
+    def _is_decline(self, text: str, intent: IntentResult) -> bool:
+        words = set(text.split())
+        decline_phrases = {"не надо", "не интересно", "не сейчас"}
+        return (
+            (intent.label == "decline" and intent.confidence >= 0.6)
+            or bool(words & {"нет", "потом", "откажусь"})
+            or any(phrase in text for phrase in decline_phrases)
+        )
+
+    def _is_catalog_request(self, words: set[str], intent: IntentResult) -> bool:
+        return (intent.label == "agree" and intent.confidence >= 0.6) or bool(
+            words & {"да", "каталог", "покажи", "интересно", "варианты"}
+        )
+
+    def _is_detail_request(self, words: set[str]) -> bool:
+        return bool(
+            words
+            & {
+                "размер",
+                "размеры",
+                "габарит",
+                "габариты",
+                "стиль",
+                "стили",
+                "дизайн",
+                "сценарий",
+                "сценарии",
+                "использование",
+                "использования",
+                "цена",
+                "стоимость",
+                "доставка",
+                "оплата",
+            }
+        )
+
+    def _is_purchase_request(self, words: set[str]) -> bool:
+        return bool(words & {"купить", "заказать", "оформить", "оформим", "беру", "возьму"})

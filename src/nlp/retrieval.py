@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,15 +57,20 @@ class VectorDatabase:
             if self._ready:
                 return
 
+            source_signature = self._dialogues_signature()
             if self._collection is not None:
                 try:
-                    if self._collection.count() > 0:
+                    if (
+                        self._collection.count() > 0
+                        and self._local_index_matches(embedding_engine.model_name, source_signature)
+                    ):
                         self._ready = True
                         return
+                    self._reset_chroma_collection()
                 except Exception:
                     self._collection = None
 
-            if self._collection is None and self._load_local_index(embedding_engine.model_name):
+            if self._collection is None and self._load_local_index(embedding_engine.model_name, source_signature):
                 self._ready = True
                 return
 
@@ -80,7 +86,7 @@ class VectorDatabase:
                 )
                 for index, (question, answer) in enumerate(pairs)
             ]
-            self._persist_records(embedding_engine.model_name)
+            self._persist_records(embedding_engine.model_name, source_signature)
             self._populate_chroma()
             self._ready = True
 
@@ -165,7 +171,7 @@ class VectorDatabase:
     def _index_path(self) -> Path:
         return Path(self.db_path) / f"{self.collection_name}_fallback_index.json"
 
-    def _load_local_index(self, embedding_model_name: str) -> bool:
+    def _local_index_matches(self, embedding_model_name: str, source_signature: str) -> bool:
         path = self._index_path()
         if not path.exists():
             return False
@@ -176,7 +182,26 @@ class VectorDatabase:
         except (OSError, json.JSONDecodeError):
             return False
 
-        if payload.get("embedding_model_name") != embedding_model_name:
+        return (
+            payload.get("embedding_model_name") == embedding_model_name
+            and payload.get("source_signature") == source_signature
+        )
+
+    def _load_local_index(self, embedding_model_name: str, source_signature: str) -> bool:
+        path = self._index_path()
+        if not path.exists():
+            return False
+
+        try:
+            with path.open("r", encoding="utf-8") as file:
+                payload = json.load(file)
+        except (OSError, json.JSONDecodeError):
+            return False
+
+        if (
+            payload.get("embedding_model_name") != embedding_model_name
+            or payload.get("source_signature") != source_signature
+        ):
             return False
 
         records = []
@@ -196,11 +221,12 @@ class VectorDatabase:
         self._records = records
         return bool(self._records)
 
-    def _persist_records(self, embedding_model_name: str) -> None:
+    def _persist_records(self, embedding_model_name: str, source_signature: str) -> None:
         path = self._index_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "embedding_model_name": embedding_model_name,
+            "source_signature": source_signature,
             "records": [
                 {
                     "id": record.record_id,
@@ -213,6 +239,30 @@ class VectorDatabase:
         }
         with path.open("w", encoding="utf-8") as file:
             json.dump(payload, file, ensure_ascii=False)
+
+    def _dialogues_signature(self) -> str:
+        digest = hashlib.sha1()
+        digest.update(b"dialogues-v1")
+        if self.dialogues_path.exists():
+            digest.update(self.dialogues_path.read_bytes())
+        for question, answer in _seed_dialogues():
+            digest.update(question.encode("utf-8"))
+            digest.update(answer.encode("utf-8"))
+        return digest.hexdigest()
+
+    def _reset_chroma_collection(self) -> None:
+        if self._client is None:
+            self._collection = None
+            return
+
+        try:
+            self._client.delete_collection(self.collection_name)
+            self._collection = self._client.get_or_create_collection(
+                name=self.collection_name,
+                metadata={"hnsw:space": "cosine"},
+            )
+        except Exception:
+            self._collection = None
 
 
 def load_dialogue_pairs(path: Path) -> list[tuple[str, str]]:

@@ -28,4 +28,5 @@ def normalize_user_text(text: str) -> str:
 def normalize_for_matching(text: str) -> str:
     """Return a stricter normalized form for vectorization and intent matching."""
     normalized = normalize_user_text(text)
-    return re.sub(r"[^0-9a-zа-яе\s+\-]", " ", normalized).strip()
+    normalized = re.sub(r"[^0-9a-zа-яе\s+\-]", " ", normalized)
+    return _SPACE_RE.sub(" ", normalized).strip()

@@ -77,7 +77,7 @@ def bind_handlers(deps: HandlerDeps) -> Router:
             return
 
         await state.set_state(DialogueStates.ad_follow_up)
-        await state.update_data(ad_declined=False)
+        await state.update_data(ad_declined=False, selected_product_sku=None)
         text, image_paths = await deps.dialogue_manager.ad_campaign_manager.render_ad_offer()
         await _send_response(
             message=callback.message,
@@ -94,7 +94,7 @@ def bind_handlers(deps: HandlerDeps) -> Router:
         sku = (callback.data or "").split(":", 1)[1]
         text, image_path = await deps.dialogue_manager.ad_campaign_manager.render_product_details(sku)
         await state.set_state(DialogueStates.ad_follow_up)
-        await state.update_data(ad_declined=False)
+        await state.update_data(ad_declined=False, selected_product_sku=sku)
         await _send_response(
             message=callback.message,
             response=BotResponse(text=text, image_paths=[image_path] if image_path else []),

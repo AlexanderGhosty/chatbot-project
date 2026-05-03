@@ -102,15 +102,55 @@ class DialogueManager:
         intent = await self.intent_classifier.predict(normalized_text)
         sentiment = await self.sentiment_classifier.predict(normalized_text)
 
+        selected_product_sku = state_data.get("selected_product_sku")
+        selected_product_sku = selected_product_sku if isinstance(selected_product_sku, str) else None
         if current_state in {DialogueStates.ad_offering.state, DialogueStates.ad_follow_up.state}:
-            reply_text = await self.ad_campaign_manager.handle_ad_reply(normalized_text, intent)
-            if intent.label == "decline":
+            ad_reply = await self.ad_campaign_manager.handle_ad_reply(
+                normalized_text,
+                intent,
+                selected_product_sku=selected_product_sku,
+            )
+            if not ad_reply.handled:
+                regular_response = await self._build_regular_text_response(
+                    intent=intent,
+                    normalized_text=normalized_text,
+                    sentiment_label=sentiment.label,
+                    sentiment_confidence=sentiment.confidence,
+                )
                 await state.set_state(DialogueStates.normal_chat)
                 await state.update_data(message_count=message_count, ad_declined=True)
+                if regular_response is not None:
+                    return regular_response
+                return BotResponse(text="Могу помочь подобрать диван, стол или шкаф.")
+
+            if ad_reply.declined:
+                await state.set_state(DialogueStates.normal_chat)
+                await state.update_data(message_count=message_count, ad_declined=True, selected_product_sku=None)
             else:
+                selected_product_sku = ad_reply.selected_sku or selected_product_sku
                 await state.set_state(DialogueStates.ad_follow_up)
-                await state.update_data(message_count=message_count, ad_declined=False)
-            return BotResponse(text=self._apply_sentiment(reply_text, sentiment.label, sentiment.confidence))
+                await state.update_data(
+                    message_count=message_count,
+                    ad_declined=False,
+                    selected_product_sku=selected_product_sku,
+                )
+            return BotResponse(text=self._apply_sentiment(ad_reply.text, sentiment.label, sentiment.confidence))
+
+        if selected_product_sku and self.ad_campaign_manager.is_product_related(normalized_text, intent):
+            ad_reply = await self.ad_campaign_manager.handle_ad_reply(
+                normalized_text,
+                intent,
+                selected_product_sku=selected_product_sku,
+            )
+            if ad_reply.handled:
+                selected_product_sku = ad_reply.selected_sku or selected_product_sku
+                await state.set_state(DialogueStates.ad_follow_up)
+                await state.update_data(
+                    message_count=message_count,
+                    ad_declined=False,
+                    selected_product_sku=selected_product_sku,
+                )
+                return BotResponse(text=self._apply_sentiment(ad_reply.text, sentiment.label, sentiment.confidence))
 
         should_trigger_ad = await self.ad_campaign_manager.should_trigger_ad(
             intent=intent,
@@ -120,9 +160,25 @@ class DialogueManager:
         )
         explicit_ad_request = self._is_explicit_ad_request(intent, normalized_text)
         if should_trigger_ad and (not state_data.get("ad_declined") or explicit_ad_request):
-            await state.set_state(DialogueStates.ad_offering)
+            selected_product = self.ad_campaign_manager.find_selected_product(normalized_text, intent)
+            if selected_product is not None or (explicit_ad_request and selected_product_sku):
+                ad_reply = await self.ad_campaign_manager.handle_ad_reply(
+                    normalized_text,
+                    intent,
+                    selected_product_sku=selected_product.sku if selected_product else selected_product_sku,
+                )
+                await state.set_state(DialogueStates.ad_follow_up)
+                await state.update_data(
+                    message_count=message_count,
+                    ad_declined=False,
+                    selected_product_sku=ad_reply.selected_sku
+                    or (selected_product.sku if selected_product else selected_product_sku),
+                )
+                return BotResponse(text=self._apply_sentiment(ad_reply.text, sentiment.label, sentiment.confidence))
+
             ad_text, ad_images = await self.ad_campaign_manager.render_ad_offer()
-            await state.update_data(message_count=message_count, ad_declined=False)
+            await state.set_state(DialogueStates.ad_offering)
+            await state.update_data(message_count=message_count, ad_declined=False, selected_product_sku=None)
 
             if explicit_ad_request:
                 return BotResponse(text=ad_text, image_paths=ad_images)
@@ -259,7 +315,15 @@ class DialogueManager:
         return result.answer_text
 
     def _is_explicit_ad_request(self, intent: IntentResult, normalized_text: str) -> bool:
-        explicit_intents = {"buy_furniture", "ask_catalog", "product_sofa", "product_table", "product_wardrobe"}
+        explicit_intents = {
+            "buy_furniture",
+            "ask_catalog",
+            "product_sofa",
+            "product_table",
+            "product_wardrobe",
+            "product_details",
+            "order_product",
+        }
         if intent.label in explicit_intents and intent.confidence >= 0.35:
             return True
 
