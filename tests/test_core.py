@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from config import load_config
+from src.bot.handlers import _send_chat_action_safely
 from src.bot.states import DialogueStates
 from src.nlp.classifier import IntentClassifier, SentimentClassifier
 from src.nlp.embeddings import EmbeddingEngine
@@ -13,7 +15,7 @@ from src.services.ad_campaign import AdCampaignManager
 from src.services.dialogue_mgr import DialogueManager
 from src.speech import SpeechProcessor
 from src.speech.asr import ASRProcessor
-from src.speech.tts import TTSProcessor
+from src.speech.tts import TTSProcessor, _PROJECT_ROOT
 from src.utils.text_cleaner import normalize_for_matching, normalize_user_text
 
 
@@ -36,6 +38,20 @@ class FakeState:
 
     async def set_state(self, state):
         self.state = getattr(state, "state", str(state))
+
+
+class FakeChat:
+    id = 1
+
+
+class FailingBot:
+    async def send_chat_action(self, **_kwargs):
+        raise RuntimeError("telegram timeout")
+
+
+class FakeMessage:
+    bot = FailingBot()
+    chat = FakeChat()
 
 
 class CoreTests(unittest.IsolatedAsyncioTestCase):
@@ -114,11 +130,28 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
             with (
                 patch("src.speech.tts.importlib.util.find_spec", return_value=None),
                 patch.object(TTSProcessor, "_synthesize_with_silero", return_value=False),
-                patch.object(TTSProcessor, "_synthesize_with_espeak", return_value=False),
+                patch.object(TTSProcessor, "_synthesize_with_espeak", return_value=False) as espeak_mock,
             ):
                 with self.assertRaises(RuntimeError):
                     await tts.synthesize_audio("тестовый ответ", str(out_path))
+            espeak_mock.assert_not_called()
             self.assertFalse(out_path.exists())
+
+    async def test_espeak_fallback_is_explicitly_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_path = Path(tmp_dir) / "answer.wav"
+            tts = TTSProcessor("v4_ru", allow_espeak_fallback=True)
+            with (
+                patch("src.speech.tts.importlib.util.find_spec", return_value=None),
+                patch.object(TTSProcessor, "_synthesize_with_silero", return_value=False),
+                patch.object(TTSProcessor, "_synthesize_with_espeak", return_value=True) as espeak_mock,
+                patch.object(TTSProcessor, "_convert_if_needed", return_value=str(out_path)),
+            ):
+                self.assertEqual(await tts.synthesize_audio("тестовый ответ", str(out_path)), str(out_path))
+            espeak_mock.assert_called_once()
+
+    async def test_chat_action_failure_does_not_break_handler_flow(self) -> None:
+        await _send_chat_action_safely(message=FakeMessage(), action="record_voice")
 
     def test_silero_torch_hub_load_hides_project_src_package(self) -> None:
         import sys
@@ -128,9 +161,16 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
         class FakeHub:
             def __init__(self) -> None:
                 self.project_src_was_hidden = False
+                self.project_root_was_hidden = False
 
             def load(self, **_kwargs):
+                import sys
+
                 self.project_src_was_hidden = sys.modules.get("src") is None
+                self.project_root_was_hidden = all(
+                    (Path.cwd() if item == "" else Path(item)).resolve() != _PROJECT_ROOT
+                    for item in sys.path
+                )
                 sys.modules["src"] = object()
                 sys.modules["src.silero"] = object()
                 return object(), "example"
@@ -143,8 +183,24 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(model)
         self.assertEqual(example, "example")
         self.assertTrue(FakeTorch.hub.project_src_was_hidden)
+        self.assertTrue(FakeTorch.hub.project_root_was_hidden)
         self.assertIs(sys.modules["src"], project_src)
         self.assertNotIn("src.silero", sys.modules)
+
+    def test_voice_logging_can_be_toggled_from_env(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "TELEGRAM_BOT_TOKEN": "123:test",
+                "VOICE_LOGGING_ENABLED": "true",
+                "TTS_ALLOW_ESPEAK_FALLBACK": "false",
+            },
+            clear=True,
+        ):
+            config = load_config()
+
+        self.assertTrue(config.voice_logging_enabled)
+        self.assertFalse(config.tts_allow_espeak_fallback)
 
 
 if __name__ == "__main__":

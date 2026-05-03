@@ -20,6 +20,8 @@ DEFAULT_SENTIMENT_MODEL_NAME = "local-lexicon"
 DEFAULT_ASR_MODEL_NAME = "ctc"
 DEFAULT_TTS_MODEL_NAME = "v4_ru"
 DEFAULT_TTS_SPEAKER = "xenia"
+DEFAULT_TTS_ALLOW_ESPEAK_FALLBACK = False
+DEFAULT_VOICE_LOGGING_ENABLED = False
 DEFAULT_RETRIEVAL_DISTANCE_THRESHOLD = 0.45
 DEFAULT_AD_MESSAGE_THRESHOLD = 4
 DEFAULT_TEMP_AUDIO_DIR = "media/temp_audio"
@@ -39,6 +41,8 @@ class AppConfig:
     asr_model_name: str = DEFAULT_ASR_MODEL_NAME
     tts_model_name: str = DEFAULT_TTS_MODEL_NAME
     tts_speaker: str = DEFAULT_TTS_SPEAKER
+    tts_allow_espeak_fallback: bool = DEFAULT_TTS_ALLOW_ESPEAK_FALLBACK
+    voice_logging_enabled: bool = DEFAULT_VOICE_LOGGING_ENABLED
     retrieval_distance_threshold: float = DEFAULT_RETRIEVAL_DISTANCE_THRESHOLD
     ad_message_threshold: int = DEFAULT_AD_MESSAGE_THRESHOLD
     temp_audio_dir: str = DEFAULT_TEMP_AUDIO_DIR
@@ -62,6 +66,19 @@ def _get_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError as exc:
         raise ConfigError(f"{name} must be an integer, got {raw!r}") from exc
+
+
+def _get_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on", "y"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "n"}:
+        return False
+    raise ConfigError(f"{name} must be a boolean, got {raw!r}")
 
 
 def _get_path(name: str, default: str) -> str:
@@ -107,6 +124,8 @@ def load_config() -> AppConfig:
         asr_model_name=os.getenv("ASR_MODEL_NAME", DEFAULT_ASR_MODEL_NAME).strip() or DEFAULT_ASR_MODEL_NAME,
         tts_model_name=os.getenv("TTS_MODEL_NAME", DEFAULT_TTS_MODEL_NAME).strip() or DEFAULT_TTS_MODEL_NAME,
         tts_speaker=os.getenv("TTS_SPEAKER", DEFAULT_TTS_SPEAKER).strip() or DEFAULT_TTS_SPEAKER,
+        tts_allow_espeak_fallback=_get_bool("TTS_ALLOW_ESPEAK_FALLBACK", DEFAULT_TTS_ALLOW_ESPEAK_FALLBACK),
+        voice_logging_enabled=_get_bool("VOICE_LOGGING_ENABLED", DEFAULT_VOICE_LOGGING_ENABLED),
         retrieval_distance_threshold=_get_float(
             "RETRIEVAL_DISTANCE_THRESHOLD", DEFAULT_RETRIEVAL_DISTANCE_THRESHOLD
         ),

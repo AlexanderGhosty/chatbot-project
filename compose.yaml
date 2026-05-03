@@ -10,7 +10,6 @@ x-app-volumes: &app-volumes
   - ./data:/app/data
   - ./media:/app/media
   - hf-cache:/cache/huggingface
-  - torch-cache:/cache/torch
   - xdg-cache:/cache/xdg
 
 services:
@@ -46,5 +45,4 @@ services:
 
 volumes:
   hf-cache:
-  torch-cache:
   xdg-cache:

@@ -45,7 +45,7 @@ def bind_handlers(deps: HandlerDeps) -> Router:
         if not message.voice:
             return
 
-        await message.bot.send_chat_action(chat_id=message.chat.id, action="record_voice")
+        await _send_chat_action_safely(message=message, action="record_voice")
         response = await deps.dialogue_manager.process_voice_message(
             chat_id=message.chat.id,
             user_id=message.from_user.id if message.from_user else 0,
@@ -61,7 +61,7 @@ def bind_handlers(deps: HandlerDeps) -> Router:
         if not message.text:
             return
 
-        await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
+        await _send_chat_action_safely(message=message, action="typing")
         response = await deps.dialogue_manager.process_text_message(
             chat_id=message.chat.id,
             user_id=message.from_user.id if message.from_user else 0,
@@ -106,6 +106,18 @@ def bind_handlers(deps: HandlerDeps) -> Router:
         logger.exception("Unhandled update processing error", extra={"event": str(event)})
 
     return router
+
+
+async def _send_chat_action_safely(message: Message, action: str) -> None:
+    """Send UX-only chat action without blocking or breaking message handling."""
+    try:
+        await message.bot.send_chat_action(
+            chat_id=message.chat.id,
+            action=action,
+            request_timeout=3,
+        )
+    except Exception as exc:
+        logger.warning("Skipped Telegram chat action %s: %r", action, exc)
 
 
 async def _send_response(message: Message, response: BotResponse, deps: HandlerDeps) -> None:

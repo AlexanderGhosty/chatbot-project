@@ -16,6 +16,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 _SILERO_IMPORT_LOCK = threading.RLock()
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class TTSProcessor:
@@ -25,11 +26,13 @@ class TTSProcessor:
         speaker: str = "xenia",
         sample_rate: int = 48000,
         timeout_seconds: float = 180.0,
+        allow_espeak_fallback: bool = False,
     ) -> None:
         self.model_name = model_name
         self.speaker = speaker
         self.sample_rate = sample_rate
         self.timeout_seconds = timeout_seconds
+        self.allow_espeak_fallback = allow_espeak_fallback
         self._model = None
         self._torch = None
         self._load_error: Exception | None = None
@@ -61,7 +64,7 @@ class TTSProcessor:
 
         if self._synthesize_with_silero(text, wav_path):
             return self._convert_if_needed(wav_path, target)
-        if self._synthesize_with_espeak(text, wav_path):
+        if self.allow_espeak_fallback and self._synthesize_with_espeak(text, wav_path):
             return self._convert_if_needed(wav_path, target)
 
         detail = f": {self._last_error}" if self._last_error else ""
@@ -102,8 +105,13 @@ class TTSProcessor:
 
         Silero's hubconf imports `src.silero`. Because the bot package is also
         `src`, Python may resolve that import to `/app/src` and fail with
-        `ModuleNotFoundError: No module named 'src.silero'`. Temporarily hiding
-        project `src*` modules lets torch.hub resolve Silero's own package.
+        `ModuleNotFoundError: No module named 'src.silero'`.
+
+        Silero's repository contains a namespace package named `src`, while
+        this project contains a regular package named `src`. A regular package
+        wins over a namespace package even when torch.hub prepends Silero's
+        repository to sys.path, so both sys.modules and the project root must be
+        hidden while hubconf.py is imported.
         """
         with _SILERO_IMPORT_LOCK:
             src_modules = {
@@ -111,10 +119,16 @@ class TTSProcessor:
                 for name, module in sys.modules.items()
                 if name == "src" or name.startswith("src.")
             }
+            original_sys_path = list(sys.path)
             for name in src_modules:
                 sys.modules.pop(name, None)
 
             try:
+                sys.path = [
+                    item
+                    for item in sys.path
+                    if not self._is_project_import_path(item)
+                ]
                 return torch.hub.load(
                     repo_or_dir="snakers4/silero-models",
                     model="silero_tts",
@@ -126,7 +140,19 @@ class TTSProcessor:
                 for name in list(sys.modules):
                     if (name == "src" or name.startswith("src.")) and name not in src_modules:
                         sys.modules.pop(name, None)
+                sys.path = original_sys_path
                 sys.modules.update(src_modules)
+
+    def _is_project_import_path(self, path_entry: str) -> bool:
+        if path_entry == "":
+            path = Path.cwd()
+        else:
+            path = Path(path_entry)
+
+        try:
+            return path.resolve() == _PROJECT_ROOT
+        except OSError:
+            return False
 
     def _synthesize_with_silero(self, text: str, wav_path: Path) -> bool:
         if not self._ensure_silero_loaded():

@@ -43,7 +43,11 @@ def build_services(config: AppConfig) -> ServiceContainer:
     )
     speech_processor = SpeechProcessor(
         asr=ASRProcessor(model_name=config.asr_model_name),
-        tts=TTSProcessor(model_name=config.tts_model_name, speaker=config.tts_speaker),
+        tts=TTSProcessor(
+            model_name=config.tts_model_name,
+            speaker=config.tts_speaker,
+            allow_espeak_fallback=config.tts_allow_espeak_fallback,
+        ),
     )
     ad_campaign_manager = AdCampaignManager.default()
     dialogue_manager = DialogueManager(
@@ -55,6 +59,7 @@ def build_services(config: AppConfig) -> ServiceContainer:
         ad_campaign_manager=ad_campaign_manager,
         retrieval_distance_threshold=config.retrieval_distance_threshold,
         ad_message_threshold=config.ad_message_threshold,
+        voice_logging_enabled=config.voice_logging_enabled,
     )
     return ServiceContainer(
         intent_classifier=intent_classifier,

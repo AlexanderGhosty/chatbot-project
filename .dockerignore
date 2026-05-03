@@ -11,5 +11,6 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 data/chromadb/
+data/model_cache/
 media/temp_audio/
 docs/rollout-*.jsonl

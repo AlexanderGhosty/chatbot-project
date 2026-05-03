@@ -51,6 +51,7 @@ class DialogueManager:
         ad_campaign_manager: AdCampaignManager,
         retrieval_distance_threshold: float,
         ad_message_threshold: int,
+        voice_logging_enabled: bool = False,
     ) -> None:
         self.intent_classifier = intent_classifier
         self.sentiment_classifier = sentiment_classifier
@@ -60,6 +61,7 @@ class DialogueManager:
         self.ad_campaign_manager = ad_campaign_manager
         self.retrieval_distance_threshold = retrieval_distance_threshold
         self.ad_message_threshold = ad_message_threshold
+        self.voice_logging_enabled = voice_logging_enabled
 
     async def process_text_message(
         self,
@@ -165,6 +167,13 @@ class DialogueManager:
 
             convert_ogg_to_wav(str(ogg_path), str(wav_path))
             transcribed = await self.speech_processor.transcribe_audio(str(wav_path))
+            if self.voice_logging_enabled:
+                logger.info(
+                    "Voice transcription recognized: chat_id=%s user_id=%s text=%r",
+                    chat_id,
+                    user_id,
+                    transcribed,
+                )
             text_response = await self.process_text_message(
                 chat_id=chat_id,
                 user_id=user_id,
@@ -187,6 +196,10 @@ class DialogueManager:
             text_response.voice_path = synthesized_path
             return text_response
         except (FileNotFoundError, OSError, RuntimeError, ValueError):
+            logger.exception("Voice message processing failed")
+            return BotResponse(text="Не удалось обработать голосовое сообщение. Попробуйте еще раз.")
+        except Exception:
+            logger.exception("Unexpected voice message processing failure")
             return BotResponse(text="Не удалось обработать голосовое сообщение. Попробуйте еще раз.")
         finally:
             for path in (ogg_path, wav_path):
