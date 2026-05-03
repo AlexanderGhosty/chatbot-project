@@ -110,6 +110,33 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn("Стол Nordic", follow_up.text)
 
+    async def test_ad_threshold_keeps_regular_answer_and_adds_ad_follow_up(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = DialogueManager(
+                intent_classifier=IntentClassifier("local-intents", intents_path="data/raw/intents.json"),
+                sentiment_classifier=SentimentClassifier("local-lexicon"),
+                embedding_engine=EmbeddingEngine("local-hash"),
+                vector_db=VectorDatabase(tmp_dir, "dialogues", "data/raw/dialogues.txt", use_chroma=False),
+                speech_processor=SpeechProcessor(ASRProcessor("ctc"), TTSProcessor("local-tone")),
+                ad_campaign_manager=AdCampaignManager.default(),
+                retrieval_distance_threshold=0.7,
+                ad_message_threshold=3,
+            )
+            state = FakeState()
+            await state.update_data(message_count=2)
+
+            response = await manager.process_text_message(
+                chat_id=1,
+                user_id=1,
+                text="Что ты умеешь?",
+                state=state,
+            )
+
+            self.assertIn("отвечаю на вопросы", response.text)
+            self.assertEqual(len(response.follow_ups), 1)
+            self.assertIn("Диван Loft", response.follow_ups[0].text)
+            self.assertEqual(state.state, DialogueStates.ad_offering.state)
+
     async def test_speech_sidecar_and_tts_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             wav_path = Path(tmp_dir) / "voice.wav"

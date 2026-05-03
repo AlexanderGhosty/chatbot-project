@@ -29,6 +29,7 @@ class BotResponse:
     send_voice: bool = False
     voice_path: str | None = None
     image_paths: list[str] = field(default_factory=list)
+    follow_ups: list["BotResponse"] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -117,22 +118,38 @@ class DialogueManager:
             message_count=ctx.message_count,
             ad_message_threshold=self.ad_message_threshold,
         )
-        if should_trigger_ad and (not state_data.get("ad_declined") or self._is_explicit_ad_request(intent, normalized_text)):
+        explicit_ad_request = self._is_explicit_ad_request(intent, normalized_text)
+        if should_trigger_ad and (not state_data.get("ad_declined") or explicit_ad_request):
             await state.set_state(DialogueStates.ad_offering)
             ad_text, ad_images = await self.ad_campaign_manager.render_ad_offer()
             await state.update_data(message_count=message_count, ad_declined=False)
-            return BotResponse(text=ad_text, image_paths=ad_images)
 
-        direct_response = await self._get_predefined_intent_response(intent)
-        if direct_response is not None:
-            await state.update_data(message_count=message_count)
-            return BotResponse(text=self._apply_sentiment(direct_response, sentiment.label, sentiment.confidence))
+            if explicit_ad_request:
+                return BotResponse(text=ad_text, image_paths=ad_images)
 
-        retrieval_result = await self._resolve_via_retrieval(normalized_text)
+            primary_response = await self._build_regular_text_response(
+                intent=intent,
+                normalized_text=normalized_text,
+                sentiment_label=sentiment.label,
+                sentiment_confidence=sentiment.confidence,
+            )
+            if primary_response is None:
+                return BotResponse(text=ad_text, image_paths=ad_images)
+            primary_response.follow_ups.append(BotResponse(text=ad_text, image_paths=ad_images))
+            return primary_response
+
+        regular_response = await self._build_regular_text_response(
+            intent=intent,
+            normalized_text=normalized_text,
+            sentiment_label=sentiment.label,
+            sentiment_confidence=sentiment.confidence,
+        )
         await state.update_data(message_count=message_count)
 
         _latency_ms = int((time.perf_counter() - started_at) * 1000)
-        return BotResponse(text=self._apply_sentiment(retrieval_result, sentiment.label, sentiment.confidence))
+        if regular_response is not None:
+            return regular_response
+        return BotResponse(text="Могу помочь подобрать диван, стол или шкаф.")
 
     async def process_voice_message(
         self,
@@ -213,6 +230,26 @@ class DialogueManager:
             return None
         return self.intent_classifier.get_random_response(intent.label)
 
+    async def _build_regular_text_response(
+        self,
+        *,
+        intent: IntentResult,
+        normalized_text: str,
+        sentiment_label: str,
+        sentiment_confidence: float,
+    ) -> BotResponse | None:
+        direct_response = await self._get_predefined_intent_response(intent)
+        if direct_response is not None:
+            return BotResponse(
+                text=self._apply_sentiment(direct_response, sentiment_label, sentiment_confidence),
+            )
+
+        if intent.label in {"buy_furniture", "ask_catalog", "product_sofa", "product_table", "product_wardrobe"}:
+            return None
+
+        retrieval_result = await self._resolve_via_retrieval(normalized_text)
+        return BotResponse(text=self._apply_sentiment(retrieval_result, sentiment_label, sentiment_confidence))
+
     async def _resolve_via_retrieval(self, normalized_text: str) -> str:
         await self.vector_db.ensure_ready(self.embedding_engine)
         embedding = await self.embedding_engine.encode(normalized_text)
@@ -225,7 +262,13 @@ class DialogueManager:
         explicit_intents = {"buy_furniture", "ask_catalog", "product_sofa", "product_table", "product_wardrobe"}
         if intent.label in explicit_intents and intent.confidence >= 0.35:
             return True
-        return any(marker in normalized_text for marker in ("мебель", "диван", "стол", "шкаф", "каталог", "купить"))
+
+        product_words = {"диван", "стол", "шкаф"}
+        action_markers = {"купить", "заказать", "каталог", "покажи", "хочу", "нужен", "нужна", "нужно", "подбери"}
+        words = set(normalized_text.split())
+        if words & action_markers:
+            return True
+        return len(words) <= 2 and bool(words & product_words)
 
     def _apply_sentiment(self, text: str, sentiment_label: str, confidence: float) -> str:
         if sentiment_label == "negative" and confidence >= 0.65:

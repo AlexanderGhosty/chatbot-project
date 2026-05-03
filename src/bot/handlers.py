@@ -122,6 +122,13 @@ async def _send_chat_action_safely(message: Message, action: str) -> None:
 
 async def _send_response(message: Message, response: BotResponse, deps: HandlerDeps) -> None:
     """Deliver assembled response payload to Telegram."""
+    await _send_single_response(message=message, response=response, deps=deps)
+    for follow_up in response.follow_ups:
+        await _send_single_response(message=message, response=follow_up, deps=deps)
+
+
+async def _send_single_response(message: Message, response: BotResponse, deps: HandlerDeps) -> None:
+    """Deliver one response payload without recursively sending follow-ups."""
     keyboard = product_catalog_keyboard(deps.dialogue_manager.ad_campaign_manager.products)
 
     if response.image_paths:
