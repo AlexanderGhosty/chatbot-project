@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -25,6 +26,7 @@ class ServiceContainer:
     sentiment_classifier: SentimentClassifier
     embedding_engine: EmbeddingEngine
     vector_db: VectorDatabase
+    chitchat_vector_db: VectorDatabase | None
     speech_processor: SpeechProcessor
     ad_campaign_manager: AdCampaignManager
     dialogue_manager: DialogueManager
@@ -41,6 +43,14 @@ def build_services(config: AppConfig) -> ServiceContainer:
         collection_name=config.chroma_collection,
         dialogues_path=config.dialogues_path,
     )
+    chitchat_vector_db = None
+    if config.chitchat_enabled and Path(config.chitchat_dialogues_path).exists():
+        chitchat_vector_db = VectorDatabase(
+            db_path=config.chroma_path,
+            collection_name=config.chitchat_chroma_collection,
+            dialogues_path=config.chitchat_dialogues_path,
+            include_seed_dialogues=False,
+        )
     speech_processor = SpeechProcessor(
         asr=ASRProcessor(model_name=config.asr_model_name),
         tts=TTSProcessor(
@@ -58,14 +68,18 @@ def build_services(config: AppConfig) -> ServiceContainer:
         speech_processor=speech_processor,
         ad_campaign_manager=ad_campaign_manager,
         retrieval_distance_threshold=config.retrieval_distance_threshold,
+        chitchat_vector_db=chitchat_vector_db,
+        chitchat_retrieval_distance_threshold=config.chitchat_retrieval_distance_threshold,
         ad_message_threshold=config.ad_message_threshold,
         voice_logging_enabled=config.voice_logging_enabled,
+        dialogue_logging_enabled=config.dialogue_logging_enabled,
     )
     return ServiceContainer(
         intent_classifier=intent_classifier,
         sentiment_classifier=sentiment_classifier,
         embedding_engine=embedding_engine,
         vector_db=vector_db,
+        chitchat_vector_db=chitchat_vector_db,
         speech_processor=speech_processor,
         ad_campaign_manager=ad_campaign_manager,
         dialogue_manager=dialogue_manager,

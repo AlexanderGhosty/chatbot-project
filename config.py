@@ -14,6 +14,10 @@ DEFAULT_INTENTS_PATH = "data/raw/intents.json"
 DEFAULT_DIALOGUES_PATH = "data/raw/dialogues.txt"
 DEFAULT_CHROMA_PATH = "data/chromadb"
 DEFAULT_CHROMA_COLLECTION = "dialogues"
+DEFAULT_CHITCHAT_ENABLED = True
+DEFAULT_CHITCHAT_DIALOGUES_PATH = "data/raw/chitchat_dialogues.txt"
+DEFAULT_CHITCHAT_CHROMA_COLLECTION = "chitchat_dialogues"
+DEFAULT_CHITCHAT_RETRIEVAL_DISTANCE_THRESHOLD = 0.45
 DEFAULT_EMBEDDING_MODEL_NAME = "cointegrated/rubert-tiny2"
 DEFAULT_INTENT_MODEL_NAME = "local-intents"
 DEFAULT_SENTIMENT_MODEL_NAME = "local-lexicon"
@@ -22,6 +26,7 @@ DEFAULT_TTS_MODEL_NAME = "v4_ru"
 DEFAULT_TTS_SPEAKER = "xenia"
 DEFAULT_TTS_ALLOW_ESPEAK_FALLBACK = False
 DEFAULT_VOICE_LOGGING_ENABLED = False
+DEFAULT_DIALOGUE_LOGGING_ENABLED = True
 DEFAULT_RETRIEVAL_DISTANCE_THRESHOLD = 0.45
 DEFAULT_AD_MESSAGE_THRESHOLD = 4
 DEFAULT_TEMP_AUDIO_DIR = "media/temp_audio"
@@ -35,6 +40,10 @@ class AppConfig:
     dialogues_path: str = DEFAULT_DIALOGUES_PATH
     chroma_path: str = DEFAULT_CHROMA_PATH
     chroma_collection: str = DEFAULT_CHROMA_COLLECTION
+    chitchat_enabled: bool = DEFAULT_CHITCHAT_ENABLED
+    chitchat_dialogues_path: str = DEFAULT_CHITCHAT_DIALOGUES_PATH
+    chitchat_chroma_collection: str = DEFAULT_CHITCHAT_CHROMA_COLLECTION
+    chitchat_retrieval_distance_threshold: float = DEFAULT_CHITCHAT_RETRIEVAL_DISTANCE_THRESHOLD
     embedding_model_name: str = DEFAULT_EMBEDDING_MODEL_NAME
     intent_model_name: str = DEFAULT_INTENT_MODEL_NAME
     sentiment_model_name: str = DEFAULT_SENTIMENT_MODEL_NAME
@@ -43,6 +52,7 @@ class AppConfig:
     tts_speaker: str = DEFAULT_TTS_SPEAKER
     tts_allow_espeak_fallback: bool = DEFAULT_TTS_ALLOW_ESPEAK_FALLBACK
     voice_logging_enabled: bool = DEFAULT_VOICE_LOGGING_ENABLED
+    dialogue_logging_enabled: bool = DEFAULT_DIALOGUE_LOGGING_ENABLED
     retrieval_distance_threshold: float = DEFAULT_RETRIEVAL_DISTANCE_THRESHOLD
     ad_message_threshold: int = DEFAULT_AD_MESSAGE_THRESHOLD
     temp_audio_dir: str = DEFAULT_TEMP_AUDIO_DIR
@@ -115,6 +125,17 @@ def load_config() -> AppConfig:
         chroma_path=_get_path("CHROMA_PATH", DEFAULT_CHROMA_PATH),
         chroma_collection=os.getenv("CHROMA_COLLECTION", DEFAULT_CHROMA_COLLECTION).strip()
         or DEFAULT_CHROMA_COLLECTION,
+        chitchat_enabled=_get_bool("CHITCHAT_ENABLED", DEFAULT_CHITCHAT_ENABLED),
+        chitchat_dialogues_path=_get_path("CHITCHAT_DIALOGUES_PATH", DEFAULT_CHITCHAT_DIALOGUES_PATH),
+        chitchat_chroma_collection=os.getenv(
+            "CHITCHAT_CHROMA_COLLECTION",
+            DEFAULT_CHITCHAT_CHROMA_COLLECTION,
+        ).strip()
+        or DEFAULT_CHITCHAT_CHROMA_COLLECTION,
+        chitchat_retrieval_distance_threshold=_get_float(
+            "CHITCHAT_RETRIEVAL_DISTANCE_THRESHOLD",
+            DEFAULT_CHITCHAT_RETRIEVAL_DISTANCE_THRESHOLD,
+        ),
         embedding_model_name=os.getenv("EMBEDDING_MODEL_NAME", DEFAULT_EMBEDDING_MODEL_NAME).strip()
         or DEFAULT_EMBEDDING_MODEL_NAME,
         intent_model_name=os.getenv("INTENT_MODEL_NAME", DEFAULT_INTENT_MODEL_NAME).strip()
@@ -126,6 +147,7 @@ def load_config() -> AppConfig:
         tts_speaker=os.getenv("TTS_SPEAKER", DEFAULT_TTS_SPEAKER).strip() or DEFAULT_TTS_SPEAKER,
         tts_allow_espeak_fallback=_get_bool("TTS_ALLOW_ESPEAK_FALLBACK", DEFAULT_TTS_ALLOW_ESPEAK_FALLBACK),
         voice_logging_enabled=_get_bool("VOICE_LOGGING_ENABLED", DEFAULT_VOICE_LOGGING_ENABLED),
+        dialogue_logging_enabled=_get_bool("DIALOGUE_LOGGING_ENABLED", DEFAULT_DIALOGUE_LOGGING_ENABLED),
         retrieval_distance_threshold=_get_float(
             "RETRIEVAL_DISTANCE_THRESHOLD", DEFAULT_RETRIEVAL_DISTANCE_THRESHOLD
         ),

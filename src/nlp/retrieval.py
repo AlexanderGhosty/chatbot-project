@@ -36,11 +36,13 @@ class VectorDatabase:
         collection_name: str,
         dialogues_path: str = "data/raw/dialogues.txt",
         use_chroma: bool = True,
+        include_seed_dialogues: bool = True,
     ) -> None:
         self.db_path = db_path
         self.collection_name = collection_name
         self.dialogues_path = Path(dialogues_path)
         self.use_chroma = use_chroma
+        self.include_seed_dialogues = include_seed_dialogues
         self._client = None
         self._collection = None
         self._records: list[_DialogueRecord] = []
@@ -74,7 +76,7 @@ class VectorDatabase:
                 self._ready = True
                 return
 
-            pairs = load_dialogue_pairs(self.dialogues_path)
+            pairs = load_dialogue_pairs(self.dialogues_path, include_seed_dialogues=self.include_seed_dialogues)
             questions = [question for question, _answer in pairs]
             embeddings = await embedding_engine.encode_many(questions)
             self._records = [
@@ -245,9 +247,11 @@ class VectorDatabase:
         digest.update(b"dialogues-v1")
         if self.dialogues_path.exists():
             digest.update(self.dialogues_path.read_bytes())
-        for question, answer in _seed_dialogues():
-            digest.update(question.encode("utf-8"))
-            digest.update(answer.encode("utf-8"))
+        digest.update(str(self.include_seed_dialogues).encode("ascii"))
+        if self.include_seed_dialogues:
+            for question, answer in _seed_dialogues():
+                digest.update(question.encode("utf-8"))
+                digest.update(answer.encode("utf-8"))
         return digest.hexdigest()
 
     def _reset_chroma_collection(self) -> None:
@@ -265,7 +269,7 @@ class VectorDatabase:
             self._collection = None
 
 
-def load_dialogue_pairs(path: Path) -> list[tuple[str, str]]:
+def load_dialogue_pairs(path: Path, *, include_seed_dialogues: bool = True) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     seen: set[str] = set()
 
@@ -286,11 +290,12 @@ def load_dialogue_pairs(path: Path) -> list[tuple[str, str]]:
             seen.add(normalized_question)
             pairs.append((normalized_question, answer.strip()))
 
-    for question, answer in _seed_dialogues():
-        normalized_question = normalize_for_matching(question)
-        if normalized_question not in seen:
-            pairs.append((normalized_question, answer))
-            seen.add(normalized_question)
+    if include_seed_dialogues:
+        for question, answer in _seed_dialogues():
+            normalized_question = normalize_for_matching(question)
+            if normalized_question not in seen:
+                pairs.append((normalized_question, answer))
+                seen.add(normalized_question)
 
     return pairs
 

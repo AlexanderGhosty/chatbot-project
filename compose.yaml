@@ -17,6 +17,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
     image: furniture-chatbot:latest
     network_mode: host
     env_file:
@@ -33,6 +34,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
     image: furniture-chatbot:latest
     network_mode: host
     env_file:
@@ -41,6 +43,47 @@ services:
       <<: *app-env
     volumes: *app-volumes
     command: ["python", "scripts/build_vector_db.py"]
+    restart: "no"
+
+  chitchat-importer:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+    image: furniture-chatbot:latest
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      <<: *app-env
+    volumes: *app-volumes
+    command: ["python", "scripts/import_siberian_persona_chat.py"]
+    restart: "no"
+
+  chitchat-indexer:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+    image: furniture-chatbot:latest
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      <<: *app-env
+    volumes: *app-volumes
+    command:
+      [
+        "python",
+        "scripts/build_vector_db.py",
+        "--dialogues",
+        "data/raw/chitchat_dialogues.txt",
+        "--collection",
+        "chitchat_dialogues",
+        "--no-seed-dialogues",
+      ]
     restart: "no"
 
 volumes:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from src.nlp.classifier import IntentResult
+from src.utils.fuzzy import correct_domain_terms
 from src.utils.text_cleaner import normalize_for_matching
 
 
@@ -75,10 +76,12 @@ class AdCampaignManager:
         message_count: int,
         ad_message_threshold: int,
     ) -> bool:
-        text = normalize_for_matching(normalized_text)
+        del message_count, ad_message_threshold
+        text = correct_domain_terms(normalized_text)
         if intent.label in {"buy_furniture", "ask_catalog", "product_sofa", "product_table", "product_wardrobe"}:
             return intent.confidence >= 0.35
 
+        words = set(text.split())
         furniture_keywords = {
             "мебель",
             "диван",
@@ -89,16 +92,15 @@ class AdCampaignManager:
             "гостиная",
             "кухня",
             "интерьер",
-            "купить",
-            "заказать",
             "каталог",
         }
-        if any(keyword in text for keyword in furniture_keywords):
+        commerce_keywords = {"доставка", "оплата", "цена", "стоимость", "скидка", "наличие"}
+        if words & furniture_keywords:
+            return True
+        if words & commerce_keywords:
             return True
 
-        if intent.label in {"farewell", "decline"}:
-            return False
-        return message_count >= ad_message_threshold
+        return False
 
     async def render_ad_offer(self) -> tuple[str, list[str]]:
         lines = [
@@ -131,7 +133,7 @@ class AdCampaignManager:
         intent: IntentResult,
         selected_product_sku: str | None = None,
     ) -> AdReply:
-        text = normalize_for_matching(normalized_text)
+        text = correct_domain_terms(normalized_text)
         words = set(text.split())
         if self._is_decline(text, intent):
             return AdReply(
@@ -202,6 +204,7 @@ class AdCampaignManager:
         )
 
     def find_selected_product(self, text: str, intent: IntentResult) -> AdProduct | None:
+        text = correct_domain_terms(text)
         label_to_sku = {
             "product_sofa": "sofa-001",
             "product_table": "table-001",
@@ -227,6 +230,7 @@ class AdCampaignManager:
         return None
 
     def is_product_related(self, text: str, intent: IntentResult) -> bool:
+        text = correct_domain_terms(text)
         words = set(text.split())
         if self.find_selected_product(text, intent) is not None:
             return True
@@ -249,7 +253,7 @@ class AdCampaignManager:
 
     def _is_catalog_request(self, words: set[str], intent: IntentResult) -> bool:
         return (intent.label == "agree" and intent.confidence >= 0.6) or bool(
-            words & {"да", "каталог", "покажи", "интересно", "варианты"}
+            words & {"да", "каталог", "покажи", "интересно", "варианты", "какие", "еще", "есть", "другие"}
         )
 
     def _is_detail_request(self, words: set[str]) -> bool:
