@@ -83,6 +83,7 @@ services:
         "--collection",
         "chitchat_dialogues",
         "--no-seed-dialogues",
+        "--filter-unsafe-pairs",
       ]
     restart: "no"
 

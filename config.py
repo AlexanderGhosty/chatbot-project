@@ -17,7 +17,7 @@ DEFAULT_CHROMA_COLLECTION = "dialogues"
 DEFAULT_CHITCHAT_ENABLED = True
 DEFAULT_CHITCHAT_DIALOGUES_PATH = "data/raw/chitchat_dialogues.txt"
 DEFAULT_CHITCHAT_CHROMA_COLLECTION = "chitchat_dialogues"
-DEFAULT_CHITCHAT_RETRIEVAL_DISTANCE_THRESHOLD = 0.45
+DEFAULT_CHITCHAT_RETRIEVAL_DISTANCE_THRESHOLD = 0.22
 DEFAULT_EMBEDDING_MODEL_NAME = "cointegrated/rubert-tiny2"
 DEFAULT_INTENT_MODEL_NAME = "local-intents"
 DEFAULT_SENTIMENT_MODEL_NAME = "local-lexicon"
@@ -26,10 +26,11 @@ DEFAULT_TTS_MODEL_NAME = "v4_ru"
 DEFAULT_TTS_SPEAKER = "xenia"
 DEFAULT_TTS_ALLOW_ESPEAK_FALLBACK = False
 DEFAULT_VOICE_LOGGING_ENABLED = False
-DEFAULT_DIALOGUE_LOGGING_ENABLED = True
+DEFAULT_DIALOGUE_LOGGING_ENABLED = False
 DEFAULT_RETRIEVAL_DISTANCE_THRESHOLD = 0.45
 DEFAULT_AD_MESSAGE_THRESHOLD = 4
 DEFAULT_TEMP_AUDIO_DIR = "media/temp_audio"
+DEFAULT_PREWARM_VECTOR_INDEXES = True
 
 
 @dataclass(slots=True)
@@ -56,6 +57,7 @@ class AppConfig:
     retrieval_distance_threshold: float = DEFAULT_RETRIEVAL_DISTANCE_THRESHOLD
     ad_message_threshold: int = DEFAULT_AD_MESSAGE_THRESHOLD
     temp_audio_dir: str = DEFAULT_TEMP_AUDIO_DIR
+    prewarm_vector_indexes: bool = DEFAULT_PREWARM_VECTOR_INDEXES
 
 
 def _get_float(name: str, default: float) -> float:
@@ -153,4 +155,5 @@ def load_config() -> AppConfig:
         ),
         ad_message_threshold=_get_int("AD_MESSAGE_THRESHOLD", DEFAULT_AD_MESSAGE_THRESHOLD),
         temp_audio_dir=_get_path("TEMP_AUDIO_DIR", DEFAULT_TEMP_AUDIO_DIR),
+        prewarm_vector_indexes=_get_bool("PREWARM_VECTOR_INDEXES", DEFAULT_PREWARM_VECTOR_INDEXES),
     )

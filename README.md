@@ -65,7 +65,8 @@ python scripts/import_siberian_persona_chat.py --max-pairs 20000
 python scripts/build_vector_db.py \
   --dialogues data/raw/chitchat_dialogues.txt \
   --collection chitchat_dialogues \
-  --no-seed-dialogues
+  --no-seed-dialogues \
+  --filter-unsafe-pairs
 ```
 
 Импортёр по умолчанию берёт только класс `chitchat`, фильтрует рискованные и
@@ -78,6 +79,9 @@ python scripts/build_vector_db.py \
 docker compose --profile tools run --rm chitchat-importer
 docker compose --profile tools run --rm chitchat-indexer
 ```
+
+Индексы можно прогревать при старте бота через `PREWARM_VECTOR_INDEXES=true`,
+чтобы первый пользовательский ответ не ждал построения retrieval-базы.
 
 ## Docker Compose
 

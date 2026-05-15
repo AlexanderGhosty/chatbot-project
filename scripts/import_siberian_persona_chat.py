@@ -10,60 +10,35 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.nlp.chitchat_safety import is_safe_chitchat_pair
 from src.utils.text_cleaner import normalize_for_matching
 
 _USER_TURN_RE = re.compile(r"(?:^|\s)Ты:\s*(.*?)(?=\s+Я:|$)", re.DOTALL)
 _SPACE_RE = re.compile(r"\s+")
-_DANGEROUS_TOPIC_RE = re.compile(
-    "|".join(
-        re.escape(word)
-        for word in (
-            "алкогол",
-            "банкрот",
-            "болезн",
-            "вакцин",
-            "долг",
-            "кеторол",
-            "кредит",
-            "лекарств",
-            "леч",
-            "наркот",
-            "передоз",
-            "покончу",
-            "политик",
-            "революц",
-            "сбербанк",
-            "смерт",
-            "суицид",
-            "убить",
-            "убью",
-            "умереть",
-            "фсб",
-            "вскро",
-        )
-    ),
-    re.IGNORECASE,
-)
-_LOW_QUALITY_RE = re.compile(
-    "|".join(
-        re.escape(phrase)
-        for phrase in (
-            "а я вот возьму и скажу",
-            "алхимия",
-            "вы должны у меня учиться",
-            "в хокей играют настоящие мужчины",
-            "как хотите так и понимайте",
-            "ну и что",
-            "сам виноват",
-            "сама виновата",
-            "сейчас вылезу из экрана",
-            "я все знаю",
-            "я всё знаю",
-            "я не верю что нечаянно",
-        )
-    ),
-    re.IGNORECASE,
-)
+_DANGEROUS_TOPIC_STEMS = {
+    "алкогол",
+    "банкрот",
+    "болезн",
+    "вакцин",
+    "долг",
+    "кеторол",
+    "кредит",
+    "лекарств",
+    "леч",
+    "наркот",
+    "передоз",
+    "покончу",
+    "политик",
+    "революц",
+    "сбербанк",
+    "смерт",
+    "суицид",
+    "убить",
+    "убью",
+    "умереть",
+    "фсб",
+    "вскро",
+}
 
 
 def main() -> None:
@@ -132,7 +107,7 @@ def iter_pairs(
             continue
         if len(question) > max_question_chars or len(answer) > max_answer_chars:
             continue
-        if not allow_risky_topics and _DANGEROUS_TOPIC_RE.search(f"{question} {answer}"):
+        if not allow_risky_topics and _has_risky_topic(question, answer):
             continue
         if not is_acceptable_pair(question, answer, min_answer_chars=min_answer_chars):
             continue
@@ -170,11 +145,14 @@ def is_acceptable_pair(question: str, answer: str, *, min_answer_chars: int = 12
         return False
     if normalized_question == normalized_answer:
         return False
-    if _LOW_QUALITY_RE.search(normalized_answer):
-        return False
     if normalized_answer.startswith("скажи ") and len(normalized_answer.split()) <= 5:
         return False
-    return True
+    return is_safe_chitchat_pair(question, answer)
+
+
+def _has_risky_topic(question: str, answer: str) -> bool:
+    text = normalize_for_matching(f"{question} {answer}")
+    return any(stem in text for stem in _DANGEROUS_TOPIC_STEMS)
 
 
 def format_pairs(pairs: list[tuple[str, str]]) -> str:

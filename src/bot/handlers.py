@@ -136,7 +136,7 @@ async def _send_single_response(message: Message, response: BotResponse, deps: H
         for image_path in response.image_paths:
             path = Path(image_path)
             if path.exists():
-                await message.answer_photo(photo=FSInputFile(path))
+                await message.answer_photo(photo=FSInputFile(path), caption=_image_caption(path, deps))
         return
 
     if response.send_voice and response.voice_path:
@@ -150,3 +150,10 @@ async def _send_single_response(message: Message, response: BotResponse, deps: H
         return
 
     await message.answer(response.text)
+
+
+def _image_caption(path: Path, deps: HandlerDeps) -> str:
+    for product in deps.dialogue_manager.ad_campaign_manager.products:
+        if Path(product.image_path) == path:
+            return f"Изображение товара: {product.title}"
+    return "Изображение товара"

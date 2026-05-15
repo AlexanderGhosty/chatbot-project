@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from src.nlp.chitchat_safety import SAFETY_FILTER_VERSION, is_safe_chitchat_pair
 from src.utils.text_cleaner import normalize_for_matching
 from src.utils.vector_math import cosine_distance
 
@@ -37,12 +38,14 @@ class VectorDatabase:
         dialogues_path: str = "data/raw/dialogues.txt",
         use_chroma: bool = True,
         include_seed_dialogues: bool = True,
+        filter_unsafe_pairs: bool = False,
     ) -> None:
         self.db_path = db_path
         self.collection_name = collection_name
         self.dialogues_path = Path(dialogues_path)
         self.use_chroma = use_chroma
         self.include_seed_dialogues = include_seed_dialogues
+        self.filter_unsafe_pairs = filter_unsafe_pairs
         self._client = None
         self._collection = None
         self._records: list[_DialogueRecord] = []
@@ -76,7 +79,11 @@ class VectorDatabase:
                 self._ready = True
                 return
 
-            pairs = load_dialogue_pairs(self.dialogues_path, include_seed_dialogues=self.include_seed_dialogues)
+            pairs = load_dialogue_pairs(
+                self.dialogues_path,
+                include_seed_dialogues=self.include_seed_dialogues,
+                filter_unsafe_pairs=self.filter_unsafe_pairs,
+            )
             questions = [question for question, _answer in pairs]
             embeddings = await embedding_engine.encode_many(questions)
             self._records = [
@@ -248,6 +255,9 @@ class VectorDatabase:
         if self.dialogues_path.exists():
             digest.update(self.dialogues_path.read_bytes())
         digest.update(str(self.include_seed_dialogues).encode("ascii"))
+        digest.update(str(self.filter_unsafe_pairs).encode("ascii"))
+        if self.filter_unsafe_pairs:
+            digest.update(SAFETY_FILTER_VERSION.encode("ascii"))
         if self.include_seed_dialogues:
             for question, answer in _seed_dialogues():
                 digest.update(question.encode("utf-8"))
@@ -269,7 +279,12 @@ class VectorDatabase:
             self._collection = None
 
 
-def load_dialogue_pairs(path: Path, *, include_seed_dialogues: bool = True) -> list[tuple[str, str]]:
+def load_dialogue_pairs(
+    path: Path,
+    *,
+    include_seed_dialogues: bool = True,
+    filter_unsafe_pairs: bool = False,
+) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
     seen: set[str] = set()
 
@@ -287,12 +302,16 @@ def load_dialogue_pairs(path: Path, *, include_seed_dialogues: bool = True) -> l
                 continue
             if len(normalized_question) < 3 or len(answer) < 2:
                 continue
+            if filter_unsafe_pairs and not is_safe_chitchat_pair(question, answer):
+                continue
             seen.add(normalized_question)
             pairs.append((normalized_question, answer.strip()))
 
     if include_seed_dialogues:
         for question, answer in _seed_dialogues():
             normalized_question = normalize_for_matching(question)
+            if filter_unsafe_pairs and not is_safe_chitchat_pair(question, answer):
+                continue
             if normalized_question not in seen:
                 pairs.append((normalized_question, answer))
                 seen.add(normalized_question)

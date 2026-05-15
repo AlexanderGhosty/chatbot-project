@@ -141,11 +141,18 @@ class AdCampaignManager:
                 declined=True,
             )
 
+        current = self.get_product(selected_product_sku) if selected_product_sku else None
+        if current is not None and self._is_alternative_request(words) and (
+            self._mentions_product(words, current.sku) or not self._mentions_any_product(words)
+        ):
+            return AdReply(text=self.render_no_alternative_text(current), selected_sku=current.sku)
+
         selected = self.find_selected_product(text, intent)
+        if selected is not None and self._is_alternative_request(words):
+            return AdReply(text=self.render_no_alternative_text(selected), selected_sku=selected.sku)
         if selected is not None:
             return AdReply(text=self.render_product_summary(selected), selected_sku=selected.sku)
 
-        current = self.get_product(selected_product_sku) if selected_product_sku else None
         if current is not None:
             if self._is_purchase_request(words):
                 return AdReply(text=self.render_purchase_prompt(current), selected_sku=current.sku)
@@ -203,6 +210,16 @@ class AdCampaignManager:
             f"Кратко по товару: {product.description}"
         )
 
+    def render_no_alternative_text(self, product: AdProduct) -> str:
+        product_kind = self._product_kind(product.sku)
+        alternatives = [item.title for item in self.products if item.sku != product.sku]
+        if alternatives:
+            return (
+                f"Сейчас в каталоге один {product_kind}: {product.title}. "
+                f"Могу вместо него показать другие товары: {', '.join(alternatives)}."
+            )
+        return f"Сейчас в каталоге только {product.title}. Могу подсказать размеры, доставку или оплату."
+
     def find_selected_product(self, text: str, intent: IntentResult) -> AdProduct | None:
         text = correct_domain_terms(text)
         label_to_sku = {
@@ -255,6 +272,27 @@ class AdCampaignManager:
         return (intent.label == "agree" and intent.confidence >= 0.6) or bool(
             words & {"да", "каталог", "покажи", "интересно", "варианты", "какие", "еще", "есть", "другие"}
         )
+
+    def _is_alternative_request(self, words: set[str]) -> bool:
+        return bool(words & {"другой", "другая", "другое", "другие", "альтернатива", "альтернативы"})
+
+    def _mentions_any_product(self, words: set[str]) -> bool:
+        return bool(words & {"диван", "софа", "стол", "шкаф", "гардероб"})
+
+    def _mentions_product(self, words: set[str], sku: str) -> bool:
+        aliases_by_sku = {
+            "sofa-001": {"диван", "софа"},
+            "table-001": {"стол"},
+            "wardrobe-001": {"шкаф", "гардероб"},
+        }
+        return bool(words & aliases_by_sku.get(sku, set()))
+
+    def _product_kind(self, sku: str) -> str:
+        return {
+            "sofa-001": "диван",
+            "table-001": "стол",
+            "wardrobe-001": "шкаф",
+        }.get(sku, "товар")
 
     def _is_detail_request(self, words: set[str]) -> bool:
         return bool(

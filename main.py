@@ -50,6 +50,7 @@ def build_services(config: AppConfig) -> ServiceContainer:
             collection_name=config.chitchat_chroma_collection,
             dialogues_path=config.chitchat_dialogues_path,
             include_seed_dialogues=False,
+            filter_unsafe_pairs=True,
         )
     speech_processor = SpeechProcessor(
         asr=ASRProcessor(model_name=config.asr_model_name),
@@ -87,6 +88,13 @@ def build_services(config: AppConfig) -> ServiceContainer:
     )
 
 
+async def prewarm_vector_indexes(services: ServiceContainer) -> None:
+    """Build retrieval indexes before polling starts to avoid slow first replies."""
+    await services.vector_db.ensure_ready(services.embedding_engine)
+    if services.chitchat_vector_db is not None:
+        await services.chitchat_vector_db.ensure_ready(services.embedding_engine)
+
+
 async def create_app() -> tuple[Bot, Dispatcher, ServiceContainer]:
     """
     Create bot application runtime.
@@ -101,6 +109,8 @@ async def create_app() -> tuple[Bot, Dispatcher, ServiceContainer]:
     bot = Bot(token=config.telegram_token)
     dispatcher = Dispatcher(storage=MemoryStorage())
     services = build_services(config)
+    if config.prewarm_vector_indexes:
+        await prewarm_vector_indexes(services)
 
     register_handlers(dispatcher=dispatcher, services=services)
     return bot, dispatcher, services

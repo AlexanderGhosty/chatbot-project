@@ -8,6 +8,7 @@ from unittest.mock import patch
 from config import load_config
 from src.bot.handlers import _send_chat_action_safely
 from src.bot.states import DialogueStates
+from src.nlp.chitchat_safety import is_safe_chitchat_answer, is_safe_chitchat_pair
 from src.nlp.classifier import IntentClassifier, SentimentClassifier
 from src.nlp.embeddings import EmbeddingEngine
 from src.nlp.retrieval import VectorDatabase, load_dialogue_pairs
@@ -97,6 +98,19 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
             pairs = load_dialogue_pairs(path, include_seed_dialogues=False)
 
         self.assertEqual(pairs, [("ты где", "Мой дом - сервер в интернете.")])
+
+    def test_load_dialogue_pairs_can_filter_unsafe_chitchat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "chitchat.txt"
+            path.write_text(
+                "- Ты говно\n- Когда человек говно то и программы не помогут\n\n"
+                "- Ты человек?\n- Я бот, но стараюсь общаться понятно.\n",
+                encoding="utf-8",
+            )
+
+            pairs = load_dialogue_pairs(path, include_seed_dialogues=False, filter_unsafe_pairs=True)
+
+        self.assertEqual(pairs, [("ты человек", "Я бот, но стараюсь общаться понятно.")])
 
     async def test_chitchat_fallback_is_used_after_domain_miss(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -270,6 +284,40 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Диван Loft", response.follow_ups[0].text)
             self.assertEqual(state.state, DialogueStates.ad_offering.state)
 
+    async def test_chat_log_regressions_use_safe_overrides_or_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = DialogueManager(
+                intent_classifier=IntentClassifier("local-intents", intents_path="data/raw/intents.json"),
+                sentiment_classifier=SentimentClassifier("local-lexicon"),
+                embedding_engine=EmbeddingEngine("local-hash"),
+                vector_db=VectorDatabase(tmp_dir, "dialogues", "data/raw/dialogues.txt", use_chroma=False),
+                chitchat_vector_db=VectorDatabase(
+                    tmp_dir,
+                    "chitchat",
+                    "data/raw/chitchat_dialogues.txt",
+                    use_chroma=False,
+                    include_seed_dialogues=False,
+                    filter_unsafe_pairs=True,
+                ),
+                chitchat_retrieval_distance_threshold=0.22,
+                speech_processor=SpeechProcessor(ASRProcessor("ctc"), TTSProcessor("local-tone")),
+                ad_campaign_manager=AdCampaignManager.default(),
+                retrieval_distance_threshold=0.7,
+                ad_message_threshold=4,
+            )
+            state = FakeState()
+            bad_fragments = ["говно", "глюк", "пизд", "видеокарта", "прогнозу погоды"]
+
+            for text in ("❤️", "По лесу", "Странные у тебя ответы", "Приколдес", "Ты странный", "лол"):
+                response = await manager.process_text_message(
+                    chat_id=1,
+                    user_id=1,
+                    text=text,
+                    state=state,
+                )
+                for fragment in bad_fragments:
+                    self.assertNotIn(fragment, response.text.lower(), text)
+
     async def test_chat_log_smalltalk_uses_conversation_routes_without_ads(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             manager = DialogueManager(
@@ -359,6 +407,34 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Вот краткий каталог", response.text)
             self.assertIn("Диван Loft", response.text)
             self.assertIn("Стол Nordic", response.text)
+
+    async def test_other_sofa_request_reports_no_alternative_instead_of_repeating_card(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = DialogueManager(
+                intent_classifier=IntentClassifier("local-intents", intents_path="data/raw/intents.json"),
+                sentiment_classifier=SentimentClassifier("local-lexicon"),
+                embedding_engine=EmbeddingEngine("local-hash"),
+                vector_db=VectorDatabase(tmp_dir, "dialogues", "data/raw/dialogues.txt", use_chroma=False),
+                speech_processor=SpeechProcessor(ASRProcessor("ctc"), TTSProcessor("local-tone")),
+                ad_campaign_manager=AdCampaignManager.default(),
+                retrieval_distance_threshold=0.7,
+                ad_message_threshold=99,
+            )
+            state = FakeState()
+            await state.set_state(DialogueStates.ad_follow_up)
+            await state.update_data(message_count=8, selected_product_sku="sofa-001")
+
+            response = await manager.process_text_message(
+                chat_id=1,
+                user_id=1,
+                text="Есть другой диван",
+                state=state,
+            )
+
+            self.assertIn("один диван", response.text)
+            self.assertIn("Стол Nordic", response.text)
+            self.assertIn("Шкаф Urban", response.text)
+            self.assertNotIn("Размеры: 190 x 92", response.text)
 
     async def test_offtopic_in_ad_state_returns_regular_answer_not_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -484,12 +560,24 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(config.tts_allow_espeak_fallback)
         self.assertTrue(config.chitchat_enabled)
         self.assertEqual(config.chitchat_dialogues_path, "data/raw/chitchat_dialogues.txt")
+        self.assertEqual(config.chitchat_retrieval_distance_threshold, 0.22)
+        self.assertTrue(config.prewarm_vector_indexes)
 
     def test_siberian_persona_chat_quality_filter_rejects_bad_pairs(self) -> None:
         self.assertFalse(is_acceptable_pair("Ты любишь хоккей", "В хокей играют настоящие мужчины"))
         self.assertFalse(is_acceptable_pair("Нечаянно", "Я не верю что нечаянно"))
         self.assertFalse(is_acceptable_pair("Новости", "Скажи расскажи мне новости"))
+        self.assertFalse(is_acceptable_pair("Ты говно", "Когда человек говно то и программы не помогут"))
+        self.assertFalse(is_acceptable_pair("Ты глюк", "Сами вы глюк, я программа"))
+        self.assertFalse(is_acceptable_pair("Лол", "Видеокарта у вас слабая"))
         self.assertTrue(is_acceptable_pair("Ты мое солнышко", "Вы тоже очень милый человек"))
+
+    def test_chitchat_safety_filter(self) -> None:
+        self.assertFalse(is_safe_chitchat_answer("Когда человек говно то и программы не помогут"))
+        self.assertFalse(is_safe_chitchat_answer("Сами вы странные. я - загадочная!"))
+        self.assertFalse(is_safe_chitchat_answer("Видеокарта у вас слабая"))
+        self.assertFalse(is_safe_chitchat_pair("Ты глюк", "Сами вы глюк, я программа"))
+        self.assertTrue(is_safe_chitchat_pair("Ты человек?", "Я бот, но стараюсь общаться понятно."))
 
 
 if __name__ == "__main__":

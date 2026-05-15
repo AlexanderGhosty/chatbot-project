@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from src.bot.states import DialogueStates
+from src.nlp.chitchat_safety import is_safe_chitchat_answer
 from src.nlp.classifier import IntentClassifier, IntentResult, SentimentClassifier
 from src.nlp.embeddings import EmbeddingEngine
 from src.nlp.retrieval import RetrievalResult, VectorDatabase
@@ -94,6 +95,11 @@ class DialogueManager:
             return BotResponse(text="Пожалуйста, отправьте текстовое сообщение.", source="validation")
 
         normalized_text = correct_domain_terms(normalize_user_text(text))
+        if not normalized_text:
+            return BotResponse(
+                text="Я понял реакцию. Можем продолжить разговор текстом или вернуться к выбору мебели.",
+                source="empty_normalized_input",
+            )
         state_data = await state.get_data()
         message_count = int(state_data.get("message_count", 0)) + 1
         current_state = await state.get_state()
@@ -513,30 +519,47 @@ class DialogueManager:
     async def _resolve_chitchat(self, normalized_text: str) -> RetrievalResult | None:
         if self.chitchat_vector_db is None:
             return None
-        return await self._resolve_via_retrieval(
+        result = await self._resolve_via_retrieval(
             vector_db=self.chitchat_vector_db,
             threshold=self.chitchat_retrieval_distance_threshold,
             normalized_text=normalized_text,
         )
+        if result is None or not is_safe_chitchat_answer(result.answer_text):
+            return None
+        return result
 
     def _resolve_chitchat_override(self, normalized_text: str) -> str | None:
         overrides = {
+            "привет сладенький": "Здравствуйте. Могу просто поговорить или помочь с выбором мебели.",
             "давай просто поговорим о всяком": "Давайте. О чем хотите поговорить?",
             "давай поговорим о всяком": "Давайте. О чем хотите поговорить?",
             "давай просто поговорим": "Давайте. О чем хотите поговорить?",
             "поговорим о всяком": "Давайте. О чем хотите поговорить?",
+            "давай поболтаем о разном": "Давайте. Можно поговорить о чем угодно, а если понадобится мебель - подскажу по каталогу.",
+            "я тебя понял давай поболтаем о разном": "Давайте. Можно поговорить о чем угодно, а если понадобится мебель - подскажу по каталогу.",
             "мне нравится небо": "Небо правда часто задает настроение. Что вам в нем нравится больше всего?",
             "как тебе моя прическа": "Я не вижу вас, но короткая стрижка часто выглядит аккуратно и уверенно.",
             "я люблю гулять": "Прогулки хорошо разгружают голову. Где вам больше нравится гулять?",
+            "по лесу": "Лес хорошо подходит для спокойной прогулки. Там обычно проще переключиться и отдохнуть.",
             "мне нравится короткая стрижка": "Короткая стрижка обычно выглядит аккуратно и проста в уходе.",
             "ты мое солнышко": "Спасибо, приятно слышать. Чем сегодня хотите поделиться?",
             "ты моя солнышко": "Спасибо, приятно слышать. Чем сегодня хотите поделиться?",
             "ты любишь хоккей": "У меня нет личных увлечений, но о хоккее можно поговорить. Вы за какую команду болеете?",
             "новости": "Я не подключен к ленте новостей, но могу обсудить тему, если расскажете, что именно интересно.",
             "нечаянно": "Понимаю. Такое бывает. Что случилось?",
+            "странные у тебя ответы": "Да, иногда могу ошибаться в разговоре. Лучше уточните, что именно звучит странно.",
+            "ты странный": "Могу звучать странно, потому что я бот. Постараюсь отвечать понятнее.",
+            "приколдес": "Понимаю, звучит забавно. Продолжим?",
+            "лол": "Понял. Смешно получилось.",
             "вчера зарплату получил теперь думаю на что потратить": (
                 "Разумно сначала закрыть обязательные расходы, а часть можно оставить на то, "
                 "что улучшит повседневный комфорт."
+            ),
+            "завтра зарплата думаю что то купить": (
+                "Можно заранее решить, что действительно улучшит быт, и не тратить деньги на случайные вещи."
+            ),
+            "завтра зарлата думаю что то купить": (
+                "Можно заранее решить, что действительно улучшит быт, и не тратить деньги на случайные вещи."
             ),
         }
         return overrides.get(normalize_for_matching(normalized_text))
