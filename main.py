@@ -13,6 +13,7 @@ from src.bot.router import register_handlers
 from src.nlp.classifier import IntentClassifier, SentimentClassifier
 from src.nlp.embeddings import EmbeddingEngine
 from src.nlp.retrieval import VectorDatabase
+from src.nlp.text_analyzer import TextAnalyzer
 from src.services.ad_campaign import AdCampaignManager
 from src.services.dialogue_mgr import DialogueManager
 from src.speech import SpeechProcessor
@@ -24,6 +25,7 @@ from src.speech.tts import TTSProcessor
 class ServiceContainer:
     intent_classifier: IntentClassifier
     sentiment_classifier: SentimentClassifier
+    text_analyzer: TextAnalyzer
     embedding_engine: EmbeddingEngine
     vector_db: VectorDatabase
     chitchat_vector_db: VectorDatabase | None
@@ -36,7 +38,11 @@ class ServiceContainer:
 def build_services(config: AppConfig) -> ServiceContainer:
     """Build service layer objects and wire dependencies."""
     intent_classifier = IntentClassifier(model_name=config.intent_model_name, intents_path=config.intents_path)
-    sentiment_classifier = SentimentClassifier(model_name=config.sentiment_model_name)
+    sentiment_classifier = SentimentClassifier(
+        model_name=config.sentiment_model_name,
+        lexicon_path=config.sentiment_lexicon_path,
+    )
+    text_analyzer = TextAnalyzer(natasha_enabled=config.natasha_enabled)
     embedding_engine = EmbeddingEngine(model_name=config.embedding_model_name)
     vector_db = VectorDatabase(
         db_path=config.chroma_path,
@@ -64,6 +70,7 @@ def build_services(config: AppConfig) -> ServiceContainer:
     dialogue_manager = DialogueManager(
         intent_classifier=intent_classifier,
         sentiment_classifier=sentiment_classifier,
+        text_analyzer=text_analyzer,
         embedding_engine=embedding_engine,
         vector_db=vector_db,
         speech_processor=speech_processor,
@@ -78,6 +85,7 @@ def build_services(config: AppConfig) -> ServiceContainer:
     return ServiceContainer(
         intent_classifier=intent_classifier,
         sentiment_classifier=sentiment_classifier,
+        text_analyzer=text_analyzer,
         embedding_engine=embedding_engine,
         vector_db=vector_db,
         chitchat_vector_db=chitchat_vector_db,

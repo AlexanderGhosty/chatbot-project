@@ -39,6 +39,20 @@ DIALOGUE_LOGGING_ENABLED=true
 `TTS_ALLOW_ESPEAK_FALLBACK` по умолчанию выключен, чтобы production-бот не
 подменял Silero синтезом через `espeak-ng`.
 
+## NLP pipeline
+
+Ввод проходит через `TextAnalyzer`: очистку текста, spell correction доменных
+слов, лемматизацию и NER через Natasha. Если Natasha недоступна, бот
+автоматически использует прежнюю нормализацию и словарное извлечение товарных
+сущностей, поэтому runtime не падает.
+
+Классификация намерений использует `TfidfVectorizer` и нейросетевой
+`MLPClassifier` из scikit-learn. При отсутствии scikit-learn остается локальный
+centroid fallback. Тональность по умолчанию считается по словарю
+КартаСловСент `data/raw/kartaslovsent.csv` с небольшими доменными
+переопределениями; внешний transformer-модель можно включить через
+`SENTIMENT_MODEL_NAME`.
+
 ## Индексация диалогов
 
 Индекс строится автоматически при первом retrieval-запросе. Его можно

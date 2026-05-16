@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import importlib.util
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +13,7 @@ from src.nlp.chitchat_safety import is_safe_chitchat_answer, is_safe_chitchat_pa
 from src.nlp.classifier import IntentClassifier, SentimentClassifier
 from src.nlp.embeddings import EmbeddingEngine
 from src.nlp.retrieval import VectorDatabase, load_dialogue_pairs
+from src.nlp.text_analyzer import TextAnalyzer
 from src.services.ad_campaign import AdCampaignManager
 from src.services.dialogue_mgr import DialogueManager
 from src.speech import SpeechProcessor
@@ -69,11 +71,62 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(correct_domain_terms("Покажи диваан"), "покажи диван")
         self.assertEqual(correct_domain_terms("Нужен стло"), "нужен стол")
 
+    def test_text_analyzer_lemmatizes_domain_products_with_fallback(self) -> None:
+        analyzer = TextAnalyzer(natasha_enabled=False)
+
+        self.assertEqual(analyzer.analyze("Хочу купить шкафа").matching_text, "хочу купить шкаф")
+        self.assertEqual(analyzer.analyze("Покажи диваны и столы").matching_text, "покажи диван и стол")
+        self.assertEqual(analyzer.analyze("Покажи диваан").matching_text, "покажи диван")
+
+    def test_text_analyzer_extracts_entities_without_natasha(self) -> None:
+        analysis = TextAnalyzer(natasha_enabled=False).analyze("Хочу заказать шкаф в Казань на пятницу картой")
+        entities = {(entity.kind, entity.normalized) for entity in analysis.entities}
+
+        self.assertIn(("product", "шкаф"), entities)
+        self.assertIn(("location", "казань"), entities)
+        self.assertIn(("date", "пятницу"), entities)
+        self.assertIn(("payment", "карта"), entities)
+
+    def test_text_analyzer_can_extract_person_with_natasha_when_available(self) -> None:
+        if importlib.util.find_spec("natasha") is None:
+            self.skipTest("natasha is not installed")
+
+        analysis = TextAnalyzer(natasha_enabled=True).analyze("Меня зовут Алексей")
+
+        self.assertTrue(
+            any(entity.kind == "person" and "алекс" in entity.normalized for entity in analysis.entities)
+        )
+
     async def test_intent_classifier(self) -> None:
         classifier = IntentClassifier("local-intents", intents_path="data/raw/intents.json")
         result = await classifier.predict("привет")
         self.assertEqual(result.label, "greeting")
         self.assertGreaterEqual(result.confidence, 0.9)
+
+    def test_intent_classifier_uses_mlp_when_sklearn_is_available(self) -> None:
+        if importlib.util.find_spec("sklearn") is None:
+            self.skipTest("sklearn is not installed")
+
+        classifier = IntentClassifier("local-intents", intents_path="data/raw/intents.json")
+
+        from sklearn.neural_network import MLPClassifier
+
+        self.assertIsInstance(classifier._sklearn_pipeline.named_steps["classifier"], MLPClassifier)
+
+    async def test_sentiment_lexicon_handles_negations_and_weights(self) -> None:
+        classifier = SentimentClassifier("local-lexicon")
+
+        self.assertEqual((await classifier.predict("мне нравится этот стол")).label, "positive")
+        self.assertEqual((await classifier.predict("мне не нравится этот стол")).label, "negative")
+        self.assertEqual((await classifier.predict("ужасно дорого")).label, "negative")
+        self.assertEqual((await classifier.predict("спасибо удобно")).label, "positive")
+        self.assertEqual((await classifier.predict("это обычный вопрос")).label, "neutral")
+
+    async def test_sentiment_classifier_uses_kartaslovsent_csv(self) -> None:
+        classifier = SentimentClassifier("local-lexicon", lexicon_path="data/raw/kartaslovsent.csv")
+
+        self.assertEqual((await classifier.predict("отличный удобный стол")).label, "positive")
+        self.assertEqual((await classifier.predict("ужасный плохой сервис")).label, "negative")
 
     async def test_retrieval_fallback_index(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -358,6 +411,91 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
                 for fragment in bad_fragments:
                     self.assertNotIn(fragment, response.text, text)
 
+    async def test_chat_log_false_intent_regressions_are_guarded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = DialogueManager(
+                intent_classifier=IntentClassifier("local-intents", intents_path="data/raw/intents.json"),
+                sentiment_classifier=SentimentClassifier("local-lexicon"),
+                embedding_engine=EmbeddingEngine("local-hash"),
+                vector_db=VectorDatabase(tmp_dir, "dialogues", "data/raw/dialogues.txt", use_chroma=False),
+                speech_processor=SpeechProcessor(ASRProcessor("ctc"), TTSProcessor("local-tone")),
+                ad_campaign_manager=AdCampaignManager.default(),
+                retrieval_distance_threshold=0.7,
+                ad_message_threshold=99,
+            )
+            state = FakeState()
+
+            football = await manager.process_text_message(
+                chat_id=1,
+                user_id=1,
+                text="Как ты относишься к футболу?",
+                state=state,
+            )
+            self.assertIn("футбол", football.text.lower())
+            self.assertNotIn("что ты умеешь", football.text.lower())
+
+            like = await manager.process_text_message(
+                chat_id=1,
+                user_id=1,
+                text="А что тебе нравится?",
+                state=state,
+            )
+            self.assertIn("личных предпочтений", like.text)
+            self.assertNotIn("помогаю подобрать", like.text)
+
+            walk = await manager.process_text_message(
+                chat_id=1,
+                user_id=1,
+                text="Давай погуляем завтра.",
+                state=state,
+            )
+            self.assertNotIn("прогнозу погоды", walk.text)
+
+    async def test_negative_feedback_does_not_match_thanks_or_chitchat_insults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = DialogueManager(
+                intent_classifier=IntentClassifier("local-intents", intents_path="data/raw/intents.json"),
+                sentiment_classifier=SentimentClassifier("local-lexicon"),
+                embedding_engine=EmbeddingEngine("local-hash"),
+                vector_db=VectorDatabase(tmp_dir, "dialogues", "data/raw/dialogues.txt", use_chroma=False),
+                chitchat_vector_db=VectorDatabase(
+                    tmp_dir,
+                    "chitchat",
+                    "data/raw/chitchat_dialogues.txt",
+                    use_chroma=False,
+                    include_seed_dialogues=False,
+                    filter_unsafe_pairs=True,
+                ),
+                chitchat_retrieval_distance_threshold=0.22,
+                speech_processor=SpeechProcessor(ASRProcessor("ctc"), TTSProcessor("local-tone")),
+                ad_campaign_manager=AdCampaignManager.default(),
+                retrieval_distance_threshold=0.7,
+                ad_message_threshold=99,
+            )
+
+            for text in (
+                "Ты очень странный, и ответы у тебя кривые.",
+                "Всё с тобой понятно, ты очень глупый.",
+                "Ну ты капец вообще.",
+                "А я не рад тебя видеть.",
+                "Ты ужасен.",
+            ):
+                response = await manager.process_text_message(
+                    chat_id=1,
+                    user_id=1,
+                    text=text,
+                    state=FakeState(),
+                )
+                lowered = response.text.lower()
+                self.assertNotIn("всегда пожалуйста", lowered, text)
+                self.assertNotIn("рад помочь", lowered, text)
+                self.assertNotIn("очень рада", lowered, text)
+                self.assertNotIn("не злопамят", lowered, text)
+                self.assertTrue(
+                    "понимаю" in lowered or "уточните" in lowered or "полезнее" in lowered,
+                    text,
+                )
+
     async def test_typo_in_product_request_selects_wardrobe(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             manager = DialogueManager(
@@ -380,6 +518,90 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertIn("Шкаф Urban", response.text)
             self.assertNotIn("Диван Loft", response.text)
+
+    async def test_order_request_uses_entities_and_saves_order_context(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = DialogueManager(
+                intent_classifier=IntentClassifier("local-intents", intents_path="data/raw/intents.json"),
+                sentiment_classifier=SentimentClassifier("local-lexicon"),
+                embedding_engine=EmbeddingEngine("local-hash"),
+                vector_db=VectorDatabase(tmp_dir, "dialogues", "data/raw/dialogues.txt", use_chroma=False),
+                speech_processor=SpeechProcessor(ASRProcessor("ctc"), TTSProcessor("local-tone")),
+                ad_campaign_manager=AdCampaignManager.default(),
+                retrieval_distance_threshold=0.7,
+                ad_message_threshold=99,
+            )
+            state = FakeState()
+
+            response = await manager.process_text_message(
+                chat_id=1,
+                user_id=1,
+                text="Хочу заказать стол в Казань на пятницу картой",
+                state=state,
+            )
+
+            self.assertIn("Стол Nordic", response.text)
+            self.assertIn("город доставки: казань", response.text)
+            self.assertIn("день доставки: пятницу", response.text)
+            self.assertIn("способ оплаты: карта", response.text)
+            self.assertEqual(state.data["selected_product_sku"], "table-001")
+            self.assertEqual(state.data["order_context"]["delivery_location"], "казань")
+
+    async def test_order_context_does_not_leak_from_weather_to_new_product(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = DialogueManager(
+                intent_classifier=IntentClassifier("local-intents", intents_path="data/raw/intents.json"),
+                sentiment_classifier=SentimentClassifier("local-lexicon"),
+                embedding_engine=EmbeddingEngine("local-hash"),
+                vector_db=VectorDatabase(tmp_dir, "dialogues", "data/raw/dialogues.txt", use_chroma=False),
+                speech_processor=SpeechProcessor(ASRProcessor("ctc"), TTSProcessor("local-tone")),
+                ad_campaign_manager=AdCampaignManager.default(),
+                retrieval_distance_threshold=0.7,
+                ad_message_threshold=99,
+            )
+            state = FakeState()
+
+            await manager.process_text_message(chat_id=1, user_id=1, text="Хочу купить диван", state=state)
+            await manager.process_text_message(chat_id=1, user_id=1, text="Доставка в город Москва", state=state)
+            await manager.process_text_message(chat_id=1, user_id=1, text="Какая погода завтра?", state=state)
+            response = await manager.process_text_message(
+                chat_id=1,
+                user_id=1,
+                text="Я хочу купить себе шкаф. Какие шкафы у тебя есть?",
+                state=state,
+            )
+
+            self.assertIn("Шкаф Urban", response.text)
+            self.assertNotIn("город доставки: москва", response.text)
+            self.assertNotIn("день доставки: завтра", response.text)
+
+    async def test_rejecting_current_product_reports_limited_alternatives(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = DialogueManager(
+                intent_classifier=IntentClassifier("local-intents", intents_path="data/raw/intents.json"),
+                sentiment_classifier=SentimentClassifier("local-lexicon"),
+                embedding_engine=EmbeddingEngine("local-hash"),
+                vector_db=VectorDatabase(tmp_dir, "dialogues", "data/raw/dialogues.txt", use_chroma=False),
+                speech_processor=SpeechProcessor(ASRProcessor("ctc"), TTSProcessor("local-tone")),
+                ad_campaign_manager=AdCampaignManager.default(),
+                retrieval_distance_threshold=0.7,
+                ad_message_threshold=99,
+            )
+            state = FakeState()
+            await state.set_state(DialogueStates.ad_follow_up)
+            await state.update_data(message_count=8, selected_product_sku="wardrobe-001")
+
+            response = await manager.process_text_message(
+                chat_id=1,
+                user_id=1,
+                text="Я, какие ещё есть шкафы? Я не хочу этот шкаф.",
+                state=state,
+            )
+
+            self.assertIn("один шкаф", response.text)
+            self.assertIn("Диван Loft", response.text)
+            self.assertIn("Стол Nordic", response.text)
+            self.assertNotIn("Размеры: 180 x 60", response.text)
 
     async def test_ad_follow_up_catalog_phrase_shows_other_products(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -550,6 +772,8 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
                 "TTS_ALLOW_ESPEAK_FALLBACK": "false",
                 "CHITCHAT_ENABLED": "true",
                 "CHITCHAT_DIALOGUES_PATH": "data/raw/chitchat_dialogues.txt",
+                "NATASHA_ENABLED": "true",
+                "SENTIMENT_LEXICON_PATH": "data/raw/kartaslovsent.csv",
             },
             clear=True,
         ):
@@ -559,6 +783,8 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(config.dialogue_logging_enabled)
         self.assertFalse(config.tts_allow_espeak_fallback)
         self.assertTrue(config.chitchat_enabled)
+        self.assertTrue(config.natasha_enabled)
+        self.assertEqual(config.sentiment_lexicon_path, "data/raw/kartaslovsent.csv")
         self.assertEqual(config.chitchat_dialogues_path, "data/raw/chitchat_dialogues.txt")
         self.assertEqual(config.chitchat_retrieval_distance_threshold, 0.22)
         self.assertTrue(config.prewarm_vector_indexes)

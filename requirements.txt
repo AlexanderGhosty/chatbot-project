@@ -11,6 +11,7 @@ torch==2.5.1+cpu
 torchaudio==2.5.1+cpu
 scikit-learn>=1.4
 numpy>=1.26
+natasha>=1.6
 
 # Speech stack. ffmpeg must also be installed as a system package.
 soundfile>=0.12
