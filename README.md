@@ -1,9 +1,5 @@
 # Intelligent Furniture-Selling Telegram Chatbot
 
-Учебный Telegram-бот для продажи мебели. Проект поддерживает текстовый диалог,
-семантический поиск по `dialogues.txt`, ML-классификацию намерений,
-рекламный сценарий с тремя товарами и голосовой pipeline ASR -> NLP -> TTS.
-
 ## Быстрый запуск
 
 ```bash
