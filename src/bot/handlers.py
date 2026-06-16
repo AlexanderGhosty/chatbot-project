@@ -4,10 +4,53 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from aiogram import F, Router
-from aiogram.filters import Command
-from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, FSInputFile, Message
+try:
+    from aiogram import F, Router
+    from aiogram.filters import Command
+    from aiogram.fsm.context import FSMContext
+    from aiogram.types import CallbackQuery, FSInputFile, Message
+except ImportError:  # Allows core tests to import helper functions without aiogram installed.
+    class _DummyFilter:
+        voice = object()
+        text = object()
+        data = ""
+
+        def __eq__(self, _other):
+            return self
+
+        def startswith(self, _prefix):
+            return self
+
+    class Router:  # type: ignore[no-redef]
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def message(self, *args, **kwargs):
+            return lambda func: func
+
+        def callback_query(self, *args, **kwargs):
+            return lambda func: func
+
+        def errors(self, *args, **kwargs):
+            return lambda func: func
+
+    def Command(_name: str):  # type: ignore[no-redef]
+        return _name
+
+    class FSMContext:  # type: ignore[no-redef]
+        pass
+
+    class CallbackQuery:  # type: ignore[no-redef]
+        pass
+
+    class FSInputFile:  # type: ignore[no-redef]
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+    class Message:  # type: ignore[no-redef]
+        pass
+
+    F = _DummyFilter()  # type: ignore[assignment]
 
 from src.bot.keyboards import product_catalog_keyboard
 from src.bot.states import DialogueStates

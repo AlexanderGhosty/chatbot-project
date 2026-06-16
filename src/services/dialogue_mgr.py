@@ -13,6 +13,7 @@ from src.nlp.chitchat_safety import is_safe_chitchat_answer
 from src.nlp.classifier import IntentClassifier, IntentResult, SentimentClassifier
 from src.nlp.embeddings import EmbeddingEngine
 from src.nlp.retrieval import RetrievalResult, VectorDatabase
+from src.nlp.text_analyzer import TextAnalyzer, TextEntity
 from src.services.ad_campaign import AdCampaignManager
 from src.speech import SpeechProcessor
 from src.utils.audio_conv import convert_ogg_to_wav
@@ -63,6 +64,7 @@ class DialogueManager:
         ad_campaign_manager: AdCampaignManager,
         retrieval_distance_threshold: float,
         ad_message_threshold: int,
+        text_analyzer: TextAnalyzer | None = None,
         chitchat_vector_db: VectorDatabase | None = None,
         chitchat_retrieval_distance_threshold: float = 0.45,
         voice_logging_enabled: bool = False,
@@ -70,6 +72,7 @@ class DialogueManager:
     ) -> None:
         self.intent_classifier = intent_classifier
         self.sentiment_classifier = sentiment_classifier
+        self.text_analyzer = text_analyzer or TextAnalyzer(natasha_enabled=False)
         self.embedding_engine = embedding_engine
         self.vector_db = vector_db
         self.speech_processor = speech_processor
@@ -94,7 +97,8 @@ class DialogueManager:
         if not text.strip():
             return BotResponse(text="Пожалуйста, отправьте текстовое сообщение.", source="validation")
 
-        normalized_text = correct_domain_terms(normalize_user_text(text))
+        analysis = self.text_analyzer.analyze(text)
+        normalized_text = analysis.matching_text
         if not normalized_text:
             return BotResponse(
                 text="Я понял реакцию. Можем продолжить разговор текстом или вернуться к выбору мебели.",
@@ -102,6 +106,8 @@ class DialogueManager:
             )
         state_data = await state.get_data()
         message_count = int(state_data.get("message_count", 0)) + 1
+        stored_order_context = self._normalize_order_context(state_data.get("order_context"))
+        order_context = stored_order_context
         current_state = await state.get_state()
         if current_state is None:
             await state.set_state(DialogueStates.normal_chat)
@@ -114,7 +120,8 @@ class DialogueManager:
             state_name=current_state,
         )
 
-        intent = await self.intent_classifier.predict(normalized_text)
+        raw_intent = await self.intent_classifier.predict(normalized_text)
+        intent = self._refine_intent(raw_intent, normalized_text)
         sentiment = await self.sentiment_classifier.predict(normalized_text)
         route = self._classify_route(
             intent=intent,
@@ -125,11 +132,37 @@ class DialogueManager:
 
         selected_product_sku = state_data.get("selected_product_sku")
         selected_product_sku = selected_product_sku if isinstance(selected_product_sku, str) else None
+        if self._is_negative_feedback(normalized_text):
+            await state.set_state(DialogueStates.normal_chat)
+            await state.update_data(
+                message_count=message_count,
+                chitchat_mode=True,
+                order_context=stored_order_context,
+            )
+            response = BotResponse(
+                text="Понимаю, ответ прозвучал неудачно. Уточните запрос, и я отвечу точнее.",
+                source="negative_feedback",
+            )
+            self._log_decision(
+                ctx=ctx,
+                text=normalized_text,
+                intent=intent,
+                route=route,
+                response=response,
+                ad_decision="negative_feedback",
+                started_at=started_at,
+            )
+            return response
+
         if current_state in {DialogueStates.ad_offering.state, DialogueStates.ad_follow_up.state}:
+            if self.ad_campaign_manager.is_product_related(normalized_text, intent):
+                order_context = self._merge_order_context(stored_order_context, analysis.entities)
             ad_reply = await self.ad_campaign_manager.handle_ad_reply(
                 normalized_text,
                 intent,
                 selected_product_sku=selected_product_sku,
+                entities=analysis.entities,
+                order_context=order_context,
             )
             if not ad_reply.handled:
                 regular_response = await self._build_regular_text_response(
@@ -144,6 +177,8 @@ class DialogueManager:
                     message_count=message_count,
                     ad_declined=True,
                     chitchat_mode=route.chitchat_mode,
+                    selected_product_sku=None,
+                    order_context=order_context,
                 )
                 if regular_response is not None:
                     self._log_decision(
@@ -175,6 +210,7 @@ class DialogueManager:
                     ad_declined=True,
                     selected_product_sku=None,
                     chitchat_mode=route.chitchat_mode,
+                    order_context=order_context,
                 )
             else:
                 selected_product_sku = ad_reply.selected_sku or selected_product_sku
@@ -184,6 +220,7 @@ class DialogueManager:
                     ad_declined=False,
                     selected_product_sku=selected_product_sku,
                     chitchat_mode=False,
+                    order_context=order_context,
                 )
             response = BotResponse(
                 text=self._apply_sentiment(ad_reply.text, sentiment.label, sentiment.confidence),
@@ -201,10 +238,21 @@ class DialogueManager:
             return response
 
         if selected_product_sku and self.ad_campaign_manager.is_product_related(normalized_text, intent):
+            selected_product = self.ad_campaign_manager.find_selected_product(
+                normalized_text,
+                intent,
+                entities=analysis.entities,
+            )
+            if selected_product is not None and selected_product.sku != selected_product_sku:
+                order_context = self._merge_order_context({}, analysis.entities)
+            else:
+                order_context = self._merge_order_context(stored_order_context, analysis.entities)
             ad_reply = await self.ad_campaign_manager.handle_ad_reply(
                 normalized_text,
                 intent,
                 selected_product_sku=selected_product_sku,
+                entities=analysis.entities,
+                order_context=order_context,
             )
             if ad_reply.handled:
                 selected_product_sku = ad_reply.selected_sku or selected_product_sku
@@ -214,6 +262,7 @@ class DialogueManager:
                     ad_declined=False,
                     selected_product_sku=selected_product_sku,
                     chitchat_mode=False,
+                    order_context=order_context,
                 )
                 response = BotResponse(
                     text=self._apply_sentiment(ad_reply.text, sentiment.label, sentiment.confidence),
@@ -244,12 +293,22 @@ class DialogueManager:
             explicit_ad_request=explicit_ad_request,
             normalized_text=normalized_text,
         ):
-            selected_product = self.ad_campaign_manager.find_selected_product(normalized_text, intent)
+            selected_product = self.ad_campaign_manager.find_selected_product(
+                normalized_text,
+                intent,
+                entities=analysis.entities,
+            )
             if selected_product is not None or (explicit_ad_request and selected_product_sku):
+                if selected_product is not None and selected_product.sku != selected_product_sku:
+                    order_context = self._merge_order_context({}, analysis.entities)
+                else:
+                    order_context = self._merge_order_context(stored_order_context, analysis.entities)
                 ad_reply = await self.ad_campaign_manager.handle_ad_reply(
                     normalized_text,
                     intent,
                     selected_product_sku=selected_product.sku if selected_product else selected_product_sku,
+                    entities=analysis.entities,
+                    order_context=order_context,
                 )
                 await state.set_state(DialogueStates.ad_follow_up)
                 await state.update_data(
@@ -258,6 +317,7 @@ class DialogueManager:
                     selected_product_sku=ad_reply.selected_sku
                     or (selected_product.sku if selected_product else selected_product_sku),
                     chitchat_mode=False,
+                    order_context=order_context,
                 )
                 response = BotResponse(
                     text=self._apply_sentiment(ad_reply.text, sentiment.label, sentiment.confidence),
@@ -282,6 +342,7 @@ class DialogueManager:
                 selected_product_sku=None,
                 chitchat_mode=False,
                 last_ad_message_count=message_count,
+                order_context=order_context,
             )
 
             if explicit_ad_request:
@@ -335,7 +396,11 @@ class DialogueManager:
             sentiment_confidence=sentiment.confidence,
             route=route,
         )
-        await state.update_data(message_count=message_count, chitchat_mode=route.chitchat_mode)
+        await state.update_data(
+            message_count=message_count,
+            chitchat_mode=route.chitchat_mode,
+            order_context=stored_order_context,
+        )
 
         if regular_response is not None:
             self._log_decision(
@@ -474,6 +539,11 @@ class DialogueManager:
                 )
 
             chitchat_result = await self._resolve_chitchat(normalized_text)
+            if chitchat_result is not None and self._has_negation_mismatch(
+                normalized_text,
+                chitchat_result.matched_question,
+            ):
+                chitchat_result = None
             if chitchat_result is not None:
                 return BotResponse(
                     text=self._apply_sentiment(chitchat_result.answer_text, sentiment_label, sentiment_confidence),
@@ -538,8 +608,17 @@ class DialogueManager:
             "давай поболтаем о разном": "Давайте. Можно поговорить о чем угодно, а если понадобится мебель - подскажу по каталогу.",
             "я тебя понял давай поболтаем о разном": "Давайте. Можно поговорить о чем угодно, а если понадобится мебель - подскажу по каталогу.",
             "мне нравится небо": "Небо правда часто задает настроение. Что вам в нем нравится больше всего?",
+            "я нравиться небо": "Небо правда часто задает настроение. Что вам в нем нравится больше всего?",
+            "а что тебе нравится": "У меня нет личных предпочтений, но можно поговорить о прогулках, спорте или мебели.",
+            "а что ты нравиться": "У меня нет личных предпочтений, но можно поговорить о прогулках, спорте или мебели.",
             "как тебе моя прическа": "Я не вижу вас, но короткая стрижка часто выглядит аккуратно и уверенно.",
             "я люблю гулять": "Прогулки хорошо разгружают голову. Где вам больше нравится гулять?",
+            "я любить гулять": "Прогулки хорошо разгружают голову. Где вам больше нравится гулять?",
+            "как ты относишься к футболу": "У меня нет личных симпатий, но о футболе можно поговорить. За какую команду болеете?",
+            "как ты относиться к футбол": "У меня нет личных симпатий, но о футболе можно поговорить. За какую команду болеете?",
+            "давай погуляем завтра": "Звучит как план для прогулки. Лучше ориентироваться на погоду и самочувствие.",
+            "давать погулять завтра": "Звучит как план для прогулки. Лучше ориентироваться на погоду и самочувствие.",
+            "это замечательный": "Рад, что вам понравилось. Можем продолжить разговор или вернуться к мебели.",
             "по лесу": "Лес хорошо подходит для спокойной прогулки. Там обычно проще переключиться и отдохнуть.",
             "мне нравится короткая стрижка": "Короткая стрижка обычно выглядит аккуратно и проста в уходе.",
             "ты мое солнышко": "Спасибо, приятно слышать. Чем сегодня хотите поделиться?",
@@ -549,6 +628,12 @@ class DialogueManager:
             "нечаянно": "Понимаю. Такое бывает. Что случилось?",
             "странные у тебя ответы": "Да, иногда могу ошибаться в разговоре. Лучше уточните, что именно звучит странно.",
             "ты странный": "Могу звучать странно, потому что я бот. Постараюсь отвечать понятнее.",
+            "ты очень странный и ответ у ты кривой": "Понимаю, ответ прозвучал неудачно. Уточните запрос, и я отвечу точнее.",
+            "весь с ты понятно ты очень глупый": "Понимаю, ответ был неудачным. Попробую отвечать точнее.",
+            "ты ужасный": "Понимаю, что ответ не устроил. Лучше уточните запрос, и я исправлюсь.",
+            "а я не рад ты видеть": "Понимаю. Не буду спорить, лучше попробую отвечать полезнее.",
+            "а я не рад тебя видеть": "Понимаю. Не буду спорить, лучше попробую отвечать полезнее.",
+            "ну ты капец вообще": "Понимаю, что ответ не понравился. Давайте уточним вопрос и попробуем еще раз.",
             "приколдес": "Понимаю, звучит забавно. Продолжим?",
             "лол": "Понял. Смешно получилось.",
             "вчера зарплату получил теперь думаю на что потратить": (
@@ -584,6 +669,9 @@ class DialogueManager:
         normalized_text: str,
         previous_chitchat_mode: bool,
     ) -> DialogueRoute:
+        if self._is_negative_feedback(normalized_text):
+            return DialogueRoute(topic="smalltalk", chitchat_mode=True)
+
         if self._is_furniture_related(normalized_text, intent):
             return DialogueRoute(topic="furniture", chitchat_mode=False)
 
@@ -662,18 +750,23 @@ class DialogueManager:
         words = set(normalize_for_matching(normalized_text).split())
         markers = {
             "гулять",
+            "погулять",
             "небо",
             "нравится",
+            "нравиться",
             "люблю",
+            "любить",
             "прическа",
             "стрижка",
             "солнышко",
             "хоккей",
+            "футбол",
             "новости",
             "нечаянно",
             "поговорим",
             "поговорить",
             "всяком",
+            "замечательный",
         }
         return bool(words & markers)
 
@@ -687,7 +780,7 @@ class DialogueManager:
             "product_details",
             "order_product",
         }
-        if intent.label in explicit_intents and intent.confidence >= 0.35:
+        if intent.label in explicit_intents and intent.confidence >= 0.35 and self._has_explicit_ad_markers(normalized_text):
             return True
 
         product_words = {"диван", "стол", "шкаф"}
@@ -722,7 +815,7 @@ class DialogueManager:
             "product_wardrobe",
             "product_details",
             "order_product",
-        } and intent.confidence >= 0.35:
+        } and intent.confidence >= 0.35 and self._has_explicit_ad_markers(text):
             return True
         return bool(words & furniture_words)
 
@@ -762,3 +855,99 @@ class DialogueManager:
         if sentiment_label == "negative" and confidence >= 0.65:
             return f"Понимаю, это может раздражать. {text}"
         return text
+
+    def _refine_intent(self, intent: IntentResult, normalized_text: str) -> IntentResult:
+        words = set(correct_domain_terms(normalized_text).split())
+        if intent.label in {"product_sofa", "product_table", "product_wardrobe"} and not (
+            words & {"диван", "софа", "стол", "шкаф", "гардероб"}
+        ):
+            return IntentResult(label="unknown", confidence=min(intent.confidence, 0.31))
+
+        if intent.label in {"buy_furniture", "ask_catalog", "product_details", "order_product"} and not self._has_explicit_ad_markers(normalized_text):
+            return IntentResult(label="unknown", confidence=min(intent.confidence, 0.31))
+
+        if intent.label == "ask_weather" and not (words & {"погода", "дождь", "снег", "температура", "прогноз"}):
+            return IntentResult(label="unknown", confidence=min(intent.confidence, 0.31))
+
+        if intent.label == "help" and not (words & {"уметь", "умеешь", "помоги", "помощь", "команда", "команды", "пользоваться", "кто"}):
+            return IntentResult(label="unknown", confidence=min(intent.confidence, 0.31))
+
+        if intent.label == "thanks" and not (words & {"спасибо", "благодарю", "спс", "помогли"}):
+            return IntentResult(label="unknown", confidence=min(intent.confidence, 0.31))
+
+        if intent.label == "greeting" and not (words & {"привет", "здравствуйте", "добрый", "хай", "начнем"}):
+            return IntentResult(label="unknown", confidence=min(intent.confidence, 0.31))
+
+        return intent
+
+    def _has_explicit_ad_markers(self, normalized_text: str) -> bool:
+        words = set(correct_domain_terms(normalized_text).split())
+        product_words = {"мебель", "диван", "софа", "стол", "шкаф", "гардероб", "каталог"}
+        action_words = {
+            "купить",
+            "заказать",
+            "оформить",
+            "оформим",
+            "беру",
+            "возьму",
+            "хочу",
+            "нужен",
+            "нужна",
+            "нужно",
+            "покажи",
+            "подбери",
+            "выбери",
+            "размер",
+            "размеры",
+            "доставка",
+            "оплата",
+            "цена",
+            "стоимость",
+        }
+        return bool(words & product_words) or bool((words & action_words) and (words & {"товар", "заказ"}))
+
+    def _is_negative_feedback(self, normalized_text: str) -> bool:
+        text = normalize_for_matching(normalized_text)
+        complaint_phrases = {
+            "ты очень странный",
+            "ты странный",
+            "ответ у ты кривой",
+            "ответы у ты кривой",
+            "ты очень глупый",
+            "ты глупый",
+            "ты ужасный",
+            "ты ужасен",
+            "ну ты капец",
+            "не рад ты видеть",
+            "не рад тебя видеть",
+            "не понял мой запрос",
+            "почему ты не понять",
+        }
+        complaint_words = {"глупый", "ужасный", "ужасен", "кривой", "странный", "дизлайк"}
+        words = set(text.split())
+        return any(phrase in text for phrase in complaint_phrases) or bool(words & complaint_words)
+
+    def _has_negation_mismatch(self, normalized_text: str, matched_question: str | None) -> bool:
+        if not matched_question:
+            return False
+        query_words = set(normalize_for_matching(normalized_text).split())
+        matched_words = set(normalize_for_matching(matched_question).split())
+        negations = {"не", "нет", "никогда"}
+        return bool(query_words & negations) != bool(matched_words & negations)
+
+    def _normalize_order_context(self, current: Any) -> dict[str, str]:
+        return dict(current) if isinstance(current, dict) else {}
+
+    def _merge_order_context(self, current: Any, entities: list[TextEntity]) -> dict[str, str]:
+        context = self._normalize_order_context(current)
+        entity_to_context = {
+            "location": "delivery_location",
+            "date": "delivery_date",
+            "address": "delivery_address",
+            "payment": "payment_method",
+        }
+        for entity in entities:
+            key = entity_to_context.get(entity.kind)
+            if key and entity.value:
+                context[key] = entity.normalized if entity.kind == "payment" else entity.value
+        return context

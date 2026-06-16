@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from src.nlp.classifier import IntentResult
 from src.utils.fuzzy import correct_domain_terms
 from src.utils.text_cleaner import normalize_for_matching
+
+if TYPE_CHECKING:
+    from src.nlp.text_analyzer import TextEntity
 
 
 @dataclass(slots=True)
@@ -132,6 +136,9 @@ class AdCampaignManager:
         normalized_text: str,
         intent: IntentResult,
         selected_product_sku: str | None = None,
+        *,
+        entities: list["TextEntity"] | None = None,
+        order_context: dict[str, str] | None = None,
     ) -> AdReply:
         text = correct_domain_terms(normalized_text)
         words = set(text.split())
@@ -142,20 +149,24 @@ class AdCampaignManager:
             )
 
         current = self.get_product(selected_product_sku) if selected_product_sku else None
+        if current is not None and self._is_current_product_rejection(words):
+            return AdReply(text=self.render_no_alternative_text(current), selected_sku=current.sku)
         if current is not None and self._is_alternative_request(words) and (
             self._mentions_product(words, current.sku) or not self._mentions_any_product(words)
         ):
             return AdReply(text=self.render_no_alternative_text(current), selected_sku=current.sku)
 
-        selected = self.find_selected_product(text, intent)
+        selected = self.find_selected_product(text, intent, entities=entities)
         if selected is not None and self._is_alternative_request(words):
             return AdReply(text=self.render_no_alternative_text(selected), selected_sku=selected.sku)
+        if selected is not None and self._is_purchase_request(words):
+            return AdReply(text=self.render_purchase_prompt(selected, order_context), selected_sku=selected.sku)
         if selected is not None:
             return AdReply(text=self.render_product_summary(selected), selected_sku=selected.sku)
 
         if current is not None:
             if self._is_purchase_request(words):
-                return AdReply(text=self.render_purchase_prompt(current), selected_sku=current.sku)
+                return AdReply(text=self.render_purchase_prompt(current, order_context), selected_sku=current.sku)
             if self._is_detail_request(words):
                 return AdReply(text=self.render_product_details_text(current, words), selected_sku=current.sku)
 
@@ -203,12 +214,16 @@ class AdCampaignManager:
         lines.append("Если подходит, напишите «хочу купить» или уточните доставку.")
         return "\n".join(lines)
 
-    def render_purchase_prompt(self, product: AdProduct) -> str:
-        return (
+    def render_purchase_prompt(self, product: AdProduct, order_context: dict[str, str] | None = None) -> str:
+        text = (
             f"Отлично, зафиксировал интерес к {product.title}. "
             "Для подготовки заказа нужны город доставки, удобный день и способ оплаты. "
             f"Кратко по товару: {product.description}"
         )
+        understood = self._render_understood_order_context(order_context)
+        if understood:
+            text += f"\nУже понял из сообщения: {understood}."
+        return text
 
     def render_no_alternative_text(self, product: AdProduct) -> str:
         product_kind = self._product_kind(product.sku)
@@ -220,8 +235,18 @@ class AdCampaignManager:
             )
         return f"Сейчас в каталоге только {product.title}. Могу подсказать размеры, доставку или оплату."
 
-    def find_selected_product(self, text: str, intent: IntentResult) -> AdProduct | None:
+    def find_selected_product(
+        self,
+        text: str,
+        intent: IntentResult,
+        *,
+        entities: list["TextEntity"] | None = None,
+    ) -> AdProduct | None:
         text = correct_domain_terms(text)
+        entity_product = self._product_from_entities(entities)
+        if entity_product is not None:
+            return entity_product
+
         label_to_sku = {
             "product_sofa": "sofa-001",
             "product_table": "table-001",
@@ -230,7 +255,10 @@ class AdCampaignManager:
         selected_sku = label_to_sku.get(intent.label)
         for product in self.products:
             title_words = normalize_for_matching(product.title).split()
-            if selected_sku == product.sku or any(word and word in text for word in title_words):
+            if (
+                (selected_sku == product.sku and self._has_product_evidence(text, product.sku))
+                or any(word and word in text for word in title_words)
+            ):
                 return product
 
         aliases = {
@@ -259,6 +287,38 @@ class AdCampaignManager:
             return True
         return bool(words & {"мебель", "доставка", "оплата", "цена", "стоимость", "интерьер"})
 
+    def _product_from_entities(self, entities: list["TextEntity"] | None) -> AdProduct | None:
+        if not entities:
+            return None
+        normalized_to_sku = {
+            "диван": "sofa-001",
+            "стол": "table-001",
+            "шкаф": "wardrobe-001",
+        }
+        for entity in entities:
+            if entity.kind != "product":
+                continue
+            sku = normalized_to_sku.get(entity.normalized)
+            if sku is not None:
+                return self.get_product(sku)
+        return None
+
+    def _render_understood_order_context(self, order_context: dict[str, str] | None) -> str:
+        if not order_context:
+            return ""
+        labels = {
+            "delivery_location": "город доставки",
+            "delivery_date": "день доставки",
+            "delivery_address": "адрес",
+            "payment_method": "способ оплаты",
+        }
+        parts = [
+            f"{label}: {order_context[key]}"
+            for key, label in labels.items()
+            if order_context.get(key)
+        ]
+        return ", ".join(parts)
+
     def _is_decline(self, text: str, intent: IntentResult) -> bool:
         words = set(text.split())
         decline_phrases = {"не надо", "не интересно", "не сейчас"}
@@ -274,7 +334,28 @@ class AdCampaignManager:
         )
 
     def _is_alternative_request(self, words: set[str]) -> bool:
-        return bool(words & {"другой", "другая", "другое", "другие", "альтернатива", "альтернативы"})
+        return bool(
+            words
+            & {
+                "другой",
+                "другая",
+                "другое",
+                "другие",
+                "альтернатива",
+                "альтернативы",
+            }
+        )
+
+    def _is_current_product_rejection(self, words: set[str]) -> bool:
+        return bool(words & {"не", "нет"}) and bool(words & {"хочу", "нужен", "нужна", "нужно", "этот", "эта"})
+
+    def _has_product_evidence(self, text: str, sku: str) -> bool:
+        aliases_by_sku = {
+            "sofa-001": {"диван", "софа"},
+            "table-001": {"стол"},
+            "wardrobe-001": {"шкаф", "гардероб"},
+        }
+        return bool(set(text.split()) & aliases_by_sku.get(sku, set()))
 
     def _mentions_any_product(self, words: set[str]) -> bool:
         return bool(words & {"диван", "софа", "стол", "шкаф", "гардероб"})

@@ -11,6 +11,7 @@ class ConfigError(ValueError):
 
 DEFAULT_PROJECT_ROOT = str(Path(__file__).resolve().parent)
 DEFAULT_INTENTS_PATH = "data/raw/intents.json"
+DEFAULT_SENTIMENT_LEXICON_PATH = "data/raw/kartaslovsent.csv"
 DEFAULT_DIALOGUES_PATH = "data/raw/dialogues.txt"
 DEFAULT_CHROMA_PATH = "data/chromadb"
 DEFAULT_CHROMA_COLLECTION = "dialogues"
@@ -21,6 +22,7 @@ DEFAULT_CHITCHAT_RETRIEVAL_DISTANCE_THRESHOLD = 0.22
 DEFAULT_EMBEDDING_MODEL_NAME = "cointegrated/rubert-tiny2"
 DEFAULT_INTENT_MODEL_NAME = "local-intents"
 DEFAULT_SENTIMENT_MODEL_NAME = "local-lexicon"
+DEFAULT_NATASHA_ENABLED = True
 DEFAULT_ASR_MODEL_NAME = "ctc"
 DEFAULT_TTS_MODEL_NAME = "v4_ru"
 DEFAULT_TTS_SPEAKER = "xenia"
@@ -38,6 +40,7 @@ class AppConfig:
     telegram_token: str
     project_root: str = DEFAULT_PROJECT_ROOT
     intents_path: str = DEFAULT_INTENTS_PATH
+    sentiment_lexicon_path: str = DEFAULT_SENTIMENT_LEXICON_PATH
     dialogues_path: str = DEFAULT_DIALOGUES_PATH
     chroma_path: str = DEFAULT_CHROMA_PATH
     chroma_collection: str = DEFAULT_CHROMA_COLLECTION
@@ -48,6 +51,7 @@ class AppConfig:
     embedding_model_name: str = DEFAULT_EMBEDDING_MODEL_NAME
     intent_model_name: str = DEFAULT_INTENT_MODEL_NAME
     sentiment_model_name: str = DEFAULT_SENTIMENT_MODEL_NAME
+    natasha_enabled: bool = DEFAULT_NATASHA_ENABLED
     asr_model_name: str = DEFAULT_ASR_MODEL_NAME
     tts_model_name: str = DEFAULT_TTS_MODEL_NAME
     tts_speaker: str = DEFAULT_TTS_SPEAKER
@@ -123,6 +127,7 @@ def load_config() -> AppConfig:
     return AppConfig(
         telegram_token=token,
         intents_path=_get_path("INTENTS_PATH", DEFAULT_INTENTS_PATH),
+        sentiment_lexicon_path=_get_path("SENTIMENT_LEXICON_PATH", DEFAULT_SENTIMENT_LEXICON_PATH),
         dialogues_path=_get_path("DIALOGUES_PATH", DEFAULT_DIALOGUES_PATH),
         chroma_path=_get_path("CHROMA_PATH", DEFAULT_CHROMA_PATH),
         chroma_collection=os.getenv("CHROMA_COLLECTION", DEFAULT_CHROMA_COLLECTION).strip()
@@ -144,6 +149,7 @@ def load_config() -> AppConfig:
         or DEFAULT_INTENT_MODEL_NAME,
         sentiment_model_name=os.getenv("SENTIMENT_MODEL_NAME", DEFAULT_SENTIMENT_MODEL_NAME).strip()
         or DEFAULT_SENTIMENT_MODEL_NAME,
+        natasha_enabled=_get_bool("NATASHA_ENABLED", DEFAULT_NATASHA_ENABLED),
         asr_model_name=os.getenv("ASR_MODEL_NAME", DEFAULT_ASR_MODEL_NAME).strip() or DEFAULT_ASR_MODEL_NAME,
         tts_model_name=os.getenv("TTS_MODEL_NAME", DEFAULT_TTS_MODEL_NAME).strip() or DEFAULT_TTS_MODEL_NAME,
         tts_speaker=os.getenv("TTS_SPEAKER", DEFAULT_TTS_SPEAKER).strip() or DEFAULT_TTS_SPEAKER,

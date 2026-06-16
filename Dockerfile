@@ -3,7 +3,6 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HF_HOME=/cache/huggingface \
-    TRANSFORMERS_CACHE=/cache/huggingface \
     TORCH_HOME=/cache/torch \
     XDG_CACHE_HOME=/cache/xdg
 

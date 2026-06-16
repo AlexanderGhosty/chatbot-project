@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import importlib.util
 import json
 import random
@@ -85,7 +86,7 @@ class IntentClassifier:
     def _build_sklearn_pipeline(self):
         try:
             from sklearn.feature_extraction.text import TfidfVectorizer
-            from sklearn.linear_model import LogisticRegression
+            from sklearn.neural_network import MLPClassifier
             from sklearn.pipeline import Pipeline
         except ImportError:
             return None
@@ -102,7 +103,16 @@ class IntentClassifier:
         pipeline = Pipeline(
             steps=[
                 ("vectorizer", TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 5), min_df=1)),
-                ("classifier", LogisticRegression(max_iter=1000, class_weight="balanced")),
+                (
+                    "classifier",
+                    MLPClassifier(
+                        hidden_layer_sizes=(64,),
+                        activation="relu",
+                        solver="lbfgs",
+                        max_iter=1000,
+                        random_state=42,
+                    ),
+                ),
             ]
         )
         pipeline.fit(examples, labels)
@@ -147,10 +157,12 @@ class IntentClassifier:
 
 
 class SentimentClassifier:
-    def __init__(self, model_name: str) -> None:
+    def __init__(self, model_name: str, lexicon_path: str = "data/raw/kartaslovsent.csv") -> None:
         self.model_name = model_name
+        self.lexicon_path = Path(lexicon_path)
         self._pipeline = None
         self._pipeline_error: Exception | None = None
+        self._lexicon = self._load_lexicon()
 
     async def predict(self, text: str) -> SentimentResult:
         if self.model_name not in {"", "local-lexicon"} and importlib.util.find_spec("transformers"):
@@ -167,36 +179,13 @@ class SentimentClassifier:
             if result is not None:
                 return result
 
-        positive_words = {
-            "отлично",
-            "хорошо",
-            "классно",
-            "нравится",
-            "спасибо",
-            "супер",
-            "удобно",
-            "красиво",
-            "интересно",
-        }
-        negative_words = {
-            "плохо",
-            "ужасно",
-            "дорого",
-            "ненавижу",
-            "раздражает",
-            "недоволен",
-            "проблема",
-            "неудобно",
-            "не нравится",
-        }
-
-        positive = sum(1 for word in positive_words if word in normalized)
-        negative = sum(1 for word in negative_words if word in normalized)
-        if positive == negative:
+        score = self._score_with_lexicon(normalized)
+        if -0.2 <= score <= 0.2:
             return SentimentResult(label="neutral", confidence=0.55)
-        if positive > negative:
-            return SentimentResult(label="positive", confidence=min(0.95, 0.6 + 0.15 * positive))
-        return SentimentResult(label="negative", confidence=min(0.95, 0.6 + 0.15 * negative))
+        confidence = min(0.95, 0.55 + min(abs(score), 2.0) / 2.0 * 0.4)
+        if score > 0.2:
+            return SentimentResult(label="positive", confidence=confidence)
+        return SentimentResult(label="negative", confidence=confidence)
 
     def _predict_with_transformers(self, normalized: str) -> SentimentResult | None:
         try:
@@ -220,6 +209,138 @@ class SentimentClassifier:
         else:
             mapped = "neutral"
         return SentimentResult(label=mapped, confidence=confidence)
+
+    def _load_lexicon(self) -> dict[str, dict[str, float] | list[str]]:
+        default = self._default_lexicon()
+        if not self.lexicon_path.exists():
+            return default
+
+        if self.lexicon_path.suffix.lower() == ".csv":
+            return self._load_kartaslovsent_csv(default)
+
+        try:
+            with self.lexicon_path.open("r", encoding="utf-8") as file:
+                payload = json.load(file)
+        except (OSError, json.JSONDecodeError):
+            return default
+
+        if not isinstance(payload, dict):
+            return default
+        for key in ("positive", "negative", "intensifiers"):
+            if not isinstance(payload.get(key), dict):
+                payload[key] = default[key]
+        if not isinstance(payload.get("negations"), list):
+            payload["negations"] = default["negations"]
+        return payload
+
+    def _default_lexicon(self) -> dict[str, dict[str, float] | list[str]]:
+        return {
+            "positive": {
+                "отлично": 1.0,
+                "отличный": 1.0,
+                "хорошо": 0.8,
+                "хороший": 0.8,
+                "классно": 0.8,
+                "нравится": 0.9,
+                "нравиться": 0.9,
+                "люблю": 0.8,
+                "спасибо": 0.7,
+                "благодарность": 0.7,
+                "супер": 1.0,
+                "удобно": 0.7,
+                "удобный": 0.7,
+                "красиво": 0.7,
+                "интересно": 0.5,
+            },
+            "negative": {
+                "плохо": -0.8,
+                "плохой": -0.8,
+                "ужасно": -1.0,
+                "ужасный": -1.0,
+                "дорого": -0.6,
+                "ненавижу": -1.0,
+                "раздражает": -0.8,
+                "недоволен": -0.8,
+                "проблема": -0.7,
+                "неудобно": -0.7,
+                "не нравится": -0.9,
+            },
+            "intensifiers": {"очень": 1.4, "слишком": 1.3, "совсем": 1.2},
+            "negations": ["не", "нет", "никогда"],
+        }
+
+    def _load_kartaslovsent_csv(
+        self,
+        default: dict[str, dict[str, float] | list[str]],
+    ) -> dict[str, dict[str, float] | list[str]]:
+        positive = dict(default["positive"]) if isinstance(default["positive"], dict) else {}
+        negative = dict(default["negative"]) if isinstance(default["negative"], dict) else {}
+        try:
+            with self.lexicon_path.open("r", encoding="utf-8", newline="") as file:
+                reader = csv.DictReader(file, delimiter=";")
+                for row in reader:
+                    term = normalize_for_matching(str(row.get("term", "")))
+                    if not term:
+                        continue
+                    try:
+                        value = float(str(row.get("value", "0")).replace(",", "."))
+                    except ValueError:
+                        continue
+                    if value > 0.2:
+                        positive.setdefault(term, value)
+                    elif value < -0.2:
+                        negative.setdefault(term, value)
+        except OSError:
+            return default
+
+        return {
+            "positive": positive,
+            "negative": negative,
+            "intensifiers": default["intensifiers"],
+            "negations": default["negations"],
+        }
+
+    def _score_with_lexicon(self, normalized: str) -> float:
+        positive = self._lexicon.get("positive", {})
+        negative = self._lexicon.get("negative", {})
+        intensifiers = self._lexicon.get("intensifiers", {})
+        negations = {str(item) for item in self._lexicon.get("negations", [])}
+        weighted = {**positive, **negative}
+
+        words = normalized.split()
+        score = 0.0
+        consumed: set[int] = set()
+        for phrase, raw_weight in sorted(weighted.items(), key=lambda item: len(str(item[0]).split()), reverse=True):
+            phrase_words = str(phrase).split()
+            if len(phrase_words) <= 1:
+                continue
+            for index in range(0, len(words) - len(phrase_words) + 1):
+                if any(position in consumed for position in range(index, index + len(phrase_words))):
+                    continue
+                if words[index : index + len(phrase_words)] == phrase_words:
+                    score += self._adjust_weight(float(raw_weight), words, index, intensifiers, negations)
+                    consumed.update(range(index, index + len(phrase_words)))
+
+        for index, word in enumerate(words):
+            if index in consumed or word not in weighted:
+                continue
+            score += self._adjust_weight(float(weighted[word]), words, index, intensifiers, negations)
+
+        return score
+
+    def _adjust_weight(
+        self,
+        weight: float,
+        words: list[str],
+        index: int,
+        intensifiers: dict[str, float] | list[str],
+        negations: set[str],
+    ) -> float:
+        if index > 0 and words[index - 1] in negations:
+            weight *= -1
+        if index > 0 and isinstance(intensifiers, dict) and words[index - 1] in intensifiers:
+            weight *= float(intensifiers[words[index - 1]])
+        return weight
 
 
 def _default_intents() -> dict[str, _IntentData]:
